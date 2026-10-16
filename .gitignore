@@ -1,0 +1,6 @@
+__pycache__/
+logs/
+work/
+*.tmp
+*.done
+fig1a_qb_dmrg.png
