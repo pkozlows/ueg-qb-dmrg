@@ -61,7 +61,7 @@ for i in "${!order[@]}"; do
     case $stage in
         check)   id=$(sb check dep "${cpu[@]}" --mem=100G -t 12:00:00 -- "$R --stage check");;
         gs)      id=$(sb gs dep "${heavy[@]}" --mem=180G -t $heavy_t -- "$pre$R --stage gs");;
-        td)      id=$(sb td dep "${heavy[@]}" --mem=180G -t $heavy_t --array=0-$((NT-1)) -- \
+        td)      id=$(sb td dep "${heavy[@]}" --mem=96G -t $heavy_t --array=0-$((NT-1)) -- \
                       "$pre$R --stage td --task \$SLURM_ARRAY_TASK_ID")
                  dep=(--dependency=afterany:${id%%_*});;   # analyze runs on whatever finished
         analyze) id=$(sb analyze dep "${cpu[@]}" --mem=20G -t 1:00:00 -- "$R --stage analyze");;
