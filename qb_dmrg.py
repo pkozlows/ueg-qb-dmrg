@@ -49,79 +49,6 @@ def load_inputs(fname):
 
 
 # ---------------------------------------------------------------------------
-# Sector and mode selection
-# ---------------------------------------------------------------------------
-def sector_kpts(kpts, eps_hf, nocc, sector):
-    """'full': every k in the basis. 'onehole': only the nocc lowest-eps_hf k-points.
-    On the onehole set the N-electron state is the filled shell, every c+_{k+q} c_k
-    annihilates it, so the ground state is |HF>|0_b> exactly and the N-1 sector is a
-    single hole hopping among occupied momenta while emitting/absorbing bosons."""
-    if sector == "full":
-        return list(kpts)
-    if sector == "onehole":
-        return sorted(kpts, key=lambda k: eps_hf[k])[:nocc]
-    raise ValueError(sector)
-
-
-def _pm_pairs(modes):
-    """Group modes into {(nu,q),(nu,-q)} pairs (a q = -q mode would be its own pair)."""
-    by_key = {(m["nu"], tuple(m["q"])): m for m in modes}
-    seen, pairs = set(), []
-    for m in modes:
-        key = (m["nu"], tuple(m["q"]))
-        if key in seen:
-            continue
-        mkey = (m["nu"], tuple(-x for x in m["q"]))
-        if mkey not in by_key:
-            raise ValueError(f"mode {key} has no -q partner")
-        group = [by_key[key]] if mkey == key else [by_key[key], by_key[mkey]]
-        seen.update({key, mkey})
-        pairs.append(group)
-    return pairs
-
-
-def prune_modes(modes, kpts):
-    """Drop modes that couple no pair of k-points in kpts (they would sit in their vacuum
-    as idle MPS sites). Pairs are kept or dropped together, so b+_{-q} always exists."""
-    kset = set(kpts)
-    def couples(q):
-        return any(tuple(a + b for a, b in zip(k, q)) in kset for k in kpts)
-    return [m for pair in _pm_pairs(modes) if couples(pair[0]["q"]) and pair[0]["g"] != 0
-            for m in pair]
-
-
-def select_modes(modes, how="all", n=None):
-    """Truncate the plasmon bath, always keeping complete +-q pairs.
-    how='all'   : every mode.
-    how='g2'    : the n modes with the largest |g|^2 (rounded down to whole pairs).
-    how='qshell': the modes in the n smallest distinct |q|^2 shells.
-    Returns the kept list in the input order."""
-    if how == "all" or n is None:
-        return list(modes)
-    pairs = _pm_pairs(modes)
-    if how == "g2":
-        pairs.sort(key=lambda p: -p[0]["g"] ** 2)
-        kept, count = [], 0
-        for p in pairs:
-            if count + len(p) > n:
-                break
-            kept += p
-            count += len(p)
-    elif how == "qshell":
-        shells = sorted({sum(x * x for x in p[0]["q"]) for p in pairs})[:n]
-        kept = [m for p in pairs if sum(x * x for x in p[0]["q"]) in shells for m in p]
-    else:
-        raise ValueError(how)
-    keys = {(m["nu"], tuple(m["q"])) for m in kept}
-    return [m for m in modes if (m["nu"], tuple(m["q"])) in keys]
-
-
-def q_shells(modes):
-    """Sorted distinct |q|^2 values present in the mode list."""
-    return sorted({sum(x * x for x in m["q"]) for m in modes})
-
-
-# ---------------------------------------------------------------------------
 # Hamiltonian construction
 # ---------------------------------------------------------------------------
 def hop(p, q, factor=1.0):
@@ -156,9 +83,9 @@ def build_model(kpts, eps_hf, modes, nbas_boson=6, interleave=True):
     modes  : list of dicts {"nu": nu, "q": q(tuple), "Omega": float, "g": float}
              must contain q and -q for every q (for each nu)
     Returns (model, info) where info maps names to dofs.
-    Restrict kpts / modes beforehand with sector_kpts, prune_modes and select_modes.
+    Fermion sites are ordered by eps_hf (k=0 first, shells contiguous, up/down adjacent).
     """
-    kpts = [tuple(k) for k in kpts]
+    kpts = sorted((tuple(k) for k in kpts), key=lambda k: (eps_hf[k], k))
     kset = set(kpts)
     spins = (0, 1)
 
@@ -294,13 +221,19 @@ def _td_configure(phi, method, m_max):
     return phi
 
 
+def _is_real_mps(mps):
+    return all(np.isrealobj(np.asarray(mt.array)) for mt in mps) and np.isreal(mps.coeff)
+
+
 def hole_correlation_td(model, gs_mps, e0, p, dt=0.5, t_max=700.0, m_max=128,
-                        method="tdvp_ps", two_way=True, h_mpo=None,
+                        method="auto", two_way=True, h_mpo=None,
                         ckpt=None, ckpt_every=50, log=print):
     """Return (t, C(t), weight) for removing an electron from spin-orbital p.
 
-    method  : 'tdvp_ps' (1-site, bond dim fixed at m_max after an initial expansion)
-              or 'tdvp_ps2' (2-site, grows up to m_max).
+    method  : 'auto' (default) runs 2-site TDVP ('tdvp_ps2') while the bond dimension is
+              below m_max, then switches to 1-site TDVP ('tdvp_ps') at fixed m_max; this
+              avoids the random padding 1-site TDVP needs to grow from a small bond
+              dimension. 'tdvp_ps' or 'tdvp_ps2' force one integrator throughout.
     two_way : H, |0> and c_p are real, so <0|c+ e^{-iHt} c|0> = phi(t/2)^T phi(t/2) with
               phi(tau) = e^{-iH tau} c|0> (bilinear, no complex conjugation). One evolution
               to t_max/2 then gives C on [0, t_max] with spacing 2*dt, and the MPS only has
@@ -317,6 +250,8 @@ def hole_correlation_td(model, gs_mps, e0, p, dt=0.5, t_max=700.0, m_max=128,
     phi.canonicalise()
     weight = float(phi.norm) ** 2 / float(gs_mps.norm) ** 2   # = <n_p>, total spectral weight
     phi = phi.normalize("mps_and_coeff")
+    if two_way and not (_is_real_mps(gs_mps) and _is_real_mps(phi)):
+        raise ValueError("two_way needs a real ground state and real c_p|0>; use two_way=False")
     phi0 = phi.copy()
 
     C, start = [1.0 + 0j], 0
@@ -325,9 +260,17 @@ def hole_correlation_td(model, gs_mps, e0, p, dt=0.5, t_max=700.0, m_max=128,
         C, start = list(d["C"] / d["weight"]), int(d["step"])
         phi = Mps.load(model, ckpt + "_mps.npz")
         log(f"resumed from step {start} (t = {start * stride * dt:.2f})")
-    _td_configure(phi, method, m_max)
-    if start == 0 and method == "tdvp_ps":
-        phi = phi.expand_bond_dimension(h_mpo, include_ex=False)   # 1-site TDVP can't grow M
+
+    def integrator(phi):
+        if method != "auto":
+            return method
+        return "tdvp_ps" if max(phi.bond_dims) >= m_max else "tdvp_ps2"
+
+    current = integrator(phi)
+    _td_configure(phi, current, m_max)
+    if start == 0 and current == "tdvp_ps":
+        phi = phi.expand_bond_dimension(h_mpo, include_ex=False)   # forced 1-site from the start
+    log(f"integrator {current} (bond dim {max(phi.bond_dims)}, m_max {m_max})")
 
     def overlap(phi):
         if two_way:
@@ -346,6 +289,11 @@ def hole_correlation_td(model, gs_mps, e0, p, dt=0.5, t_max=700.0, m_max=128,
     for i in range(start + 1, nsteps + 1):
         phi = phi.evolve(h_mpo, dt)
         C.append(overlap(phi))
+        nxt = integrator(phi)
+        if nxt != current:
+            log(f"step {i}: bond dim reached {max(phi.bond_dims)} -> switching to {nxt}")
+            current = nxt
+            _td_configure(phi, current, m_max)
         if ckpt is not None and (i % ckpt_every == 0 or i == nsteps):
             dump(i)
         if i % ckpt_every == 0 or i == nsteps:

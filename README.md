@@ -1,7 +1,7 @@
 # TD-DMRG spectral functions of quasiboson Hamiltonians for the uniform electron gas
 
 **Status: code ready, nothing has been run yet. Review requested before we submit jobs.**
-See [Open questions for review](#open-questions-for-review).
+See [Design choices](#design-choices) for the decisions a reviewer may want to revisit.
 
 ## Goal
 
@@ -30,6 +30,8 @@ with
 Here n_k is the HF occupation and v_M is the Madelung constant. ε^HF is the probe-charge
 shifted-Ewald HF eigenvalue (`hfes_prew`): occupied levels carry −|v_M|, which is the
 Koopmans / charged-excitation convention used for the absolute ω axis of McClain Fig. 1a.
+All 19 k-points (38 spin-orbitals) and 14 electrons are kept, and every plasmon mode is
+included (no bath truncation).
 
 The plasmons (ν labels the dRPA eigenmodes in each momentum-transfer sector q) and their
 couplings come from a per-q direct-RPA (Casida) calculation. There are two choices:
@@ -41,44 +43,34 @@ couplings come from a per-q direct-RPA (Casida) calculation. There are two choic
 
 g_ν(q) = |V^ν_{k,k−q}(q)| is independent of k for plane-wave orbitals.
 
-**Madelung caveat for the `hf` bath (deliberate).** Because only the occupied `hfes_prew`
-carry −|v_M|, the particle-hole gaps ε_a − ε_i entering dRPA@HF are one Madelung constant
-(4.97 eV) too high. The dRPA@HF plasmon therefore sits near 10.6 eV instead of about 4.7 eV.
-We use the bath exactly as defined above (`hfes_prew`) on purpose. The Madelung-free
-alternative is in `hfes_unsh`, which is stored in the npz.
+**Madelung term in the dRPA@HF bath.** Normal-ordering the finite-cell Hamiltonian (which
+excludes q = 0) with respect to |Φ₀⟩ gives Ĥ_N = F̂ + V̂_res with F_kk = k²/2 + Σ^x_k − |v_M|/2.
+In this partitioning the orbital Hessian is
 
-### Sectors
+A_{iq,jq} = δ_ij (ε^HF_{k_i+q} − ε^HF_{k_i} + |v_M|) + (2v_q − v_{|k_i−k_j|})/Ω,
+B_{iq,j−q} = (2v_q − v_{|k_i−k_j+q|})/Ω,
 
-Each bath is solved in two sectors (`--sector`):
-
-- **`full`**: all 19 k-points (38 spin-orbitals) with 14 electrons. The ground state is a
-  correlated DMRG state, and the hole can scatter into virtual momenta.
-- **`onehole`**: only the 7 occupied k-points (14 spin-orbitals).
-  - On this set the 14-electron state is the filled shell, so every a†_{k+q} a_k annihilates
-    it and the ground state is |HF⟩ ⊗ |0_b⟩ exactly. `gs` asserts E₀ = 2 Σ ε_occ.
-  - The N−1 sector is then a single hole hopping among occupied momenta while emitting and
-    absorbing plasmons.
-  - This is the sector in which our earlier coupled-cluster / self-consistent cumulant /
-    exact-diagonalization work on the same Hamiltonian was done. The exact-diagonalization
-    targets are QP −6.17 eV and satellite −11.24 eV (`lda`), and QP −7.06 eV and satellite
-    −16.09 eV (`hf`).
-  - It is the built-in sanity check, and it gives the comparison "one-hole vs full".
-
-Modes that couple no pair of k-points in the sector are pruned, always as whole ±q pairs.
+where ε^HF here excludes the Madelung term. The extra +|v_M| on the diagonal comes from the
+q ≠ 0 restriction in the exchange term. The direct approximation drops the exchange terms
+but keeps this diagonal shift, so dRPA@HF is the Casida problem built on
+ε̃_k = k²/2 + Σ^x_k − |v_M| n_k, which is exactly `hfes_prew`. The bath therefore includes
+the Madelung shift by construction. Its strongest plasmon sits near 10.6 eV, compared with
+about 5 eV for dRPA@LDA.
 
 ### Mapping to Renormalizer (`qb_dmrg.py`)
 
 **Fermions** are Jordan–Wigner mapped onto `BasisHalfSpin` sites:
 
 - Each site has quantum number `sigmaqn=[0,1]`, i.e. U(1) particle number.
-- Site order is (k₁↑, k₁↓, k₂↑, …) in the order k-points appear in the npz.
+- Site order is (k₁↑, k₁↓, k₂↑, …) with the k-points sorted by ε_k^HF, so k = 0 comes first
+  and the occupied shells are contiguous.
 - a_p = Z₀⋯Z_{p−1} σ⁺_p and a†_p a_q = σ⁻_p Z⋯Z σ⁺_q, with qn given explicitly.
   (Renormalizer's `sigma_+` lowers 1 → 0 in this basis.)
 
 **Bosons** are `BasisSHO` sites truncated at `nbas` levels, so n_max = nbas − 1.
 
 **Site ordering.** Bosons are interleaved among the fermion sites with a uniform stride
-(`interleave=True`); see the open questions.
+(`interleave=True`); see Design choices.
 
 ## Spectral function
 
@@ -96,7 +88,7 @@ removal energy, the same frame as McClain Fig. 1a.
    is needed. (In Renormalizer 0.0.11, `Mps.evolve(mpo, dt)` with real dt applies e^{−iH dt}.)
 3. The correlation function is
    C(t) = ⟨φ₀| e^{−i(H−E₀)t} |φ₀⟩ = Σ_n w_n e^{+iω_n t},  with ω_n = E₀ − E_n.
-4. **Two-way propagation (default).** H, |0⟩ and a_p are real, so
+4. **Two-way propagation (default).** H, |0⟩ and a_p are real (asserted in the code), so
    C(t) = φ(t/2)ᵀ φ(t/2), with φ(τ) = e^{−i(H−E₀)τ} φ₀.
    - This is a bilinear product with no complex conjugation (`Mps.dot` does not conjugate).
    - One evolution to T/2 therefore gives C on [0, T], with sample spacing 2·dt.
@@ -107,26 +99,20 @@ removal energy, the same frame as McClain Fig. 1a.
    A(ω) = (1/π) Re ∫₀^T dt e^{iωt} C*(t) e^{−ηt}  (trapezoid rule),
    which tends to the Lorentzian sum above as T → ∞.
 
-### How long and how fine a time grid?
+### Time grid (fixed: dt = 0.5 a.u., T = 700 a.u.)
 
-- **Total time T.** The broadening sets T, not the frequency spacing you want on the plot.
-  After damping, the integrand is e^{−ηT} at the end of the window, and that sets the
-  truncation ringing. With η = 0.2 eV = 7.35·10⁻³ Ha:
+These are chosen once and not scanned; we revisit them only if the results look off.
 
-  | T (a.u.) | e^{−ηT} (ringing) |
-  |---|---|
-  | 300 | 11 % |
-  | 410 (= 3/η) | 5 % |
-  | 500 | 2.5 % |
-  | 700 (≈ 5/η) | 0.6 % |
-
-  Going beyond about 5/η buys nothing. You can plot A(ω) on as fine an ω grid as you like,
-  because the transform is evaluated directly, not by FFT.
-- **Time step dt.** dt is set by TDVP accuracy, not by Nyquist. The removal poles span
-  roughly −20 to 0 eV (|ω| < 0.75 Ha), while sampling at 2·dt = 1 a.u. resolves |ω| up to
-  π Ha. We use dt = 0.5 a.u. and check it against dt = 0.25 over t ≤ 100.
-- **Reference point.** dt = 0.5 and T = 700 means 700 TDVP steps with two-way propagation.
-  The earlier cumulant grid in `pyqcpbc_chk.py` (T = 628, dt = 0.52) was about right.
+- **Total time T = 700 a.u.** The broadening sets T, not the frequency spacing you want on
+  the plot. After damping, the integrand is e^{−ηT} at the end of the window, which sets the
+  truncation ringing. With η = 0.2 eV = 7.35·10⁻³ Ha, T = 700 ≈ 5/η leaves e^{−ηT} ≈ 0.6 %;
+  longer buys nothing. A(ω) can be plotted on any ω grid because the transform is evaluated
+  directly, not by FFT.
+- **Time step dt = 0.5 a.u.** dt is set by TDVP accuracy, not by Nyquist. The removal poles
+  span roughly −20 to 0 eV (|ω| < 0.75 Ha), while sampling at 2·dt = 1 a.u. resolves |ω| up
+  to π Ha. The `check` stage measures the TDVP error at this dt on the tiny model.
+- With two-way propagation this is 700 TDVP steps. The earlier cumulant grid in
+  `pyqcpbc_chk.py` (T = 628, dt = 0.52) was about right.
 
 ## Convergence ladders (`run_tddmrg.py`)
 
@@ -137,20 +123,13 @@ is < 10⁻⁶, and DMRG's own sweep test passes.
 **Time evolution (`td`).** One SLURM array task per point; one parameter is varied at a time
 around the reference.
 
-- Reference: M = 256, nbas = 4, all modes, 1-site TDVP (`tdvp_ps`), dt = 0.5, T = 700.
+- Reference: M = 256, nbas = 4, all modes, 2-site → 1-site TDVP, dt = 0.5, T = 700.
 - Ladders:
 
 | ladder | values | question |
 |---|---|---|
 | `M` | 64, 128, 256, 512 | TD bond dimension |
 | `nb` | 2, 3, 4, 5, 6 | boson truncation. The n-th plasmon replica needs n_max ≥ n, so the ground-state test alone is not enough. |
-| `modes_g2` | keep the 6, 12, 24, 48, 96 largest-\|g\|² modes | **can the plasmon bath be truncated?** Our expectation is that every mode is needed. |
-| `modes_qshell` | keep \|q\|² shells 1, ≤2, ≤3, ≤4 | same question, organised by momentum transfer |
-| `T` | A(ω) recomputed on [0, 300], [0, 500], [0, 700] | time-window truncation |
-| `dt` | 0.25 vs 0.5 over t ≤ 100 | TDVP time-step error |
-
-- Truncated-bath tasks recompute the ground state for their own bath.
-- A truncation that keeps every mode is skipped as identical to the reference.
 
 **Analysis (`analyze`).** For every run, `convergence.md` lists:
 
@@ -172,7 +151,7 @@ strongest ±x̂ plasmon pairs. It compares against dense exact diagonalization:
 - **Spectrum:** A(ω) error is split into a TDVP part and a finite-T part.
 - **HF limit:** with nbas = 1 there must be a single pole at ε_k0 with unit weight.
 
-It then times a ground-state sweep and a TDVP step on the cell's real model and writes
+It then times a ground-state sweep and a TDVP step on the real model and writes
 `timing.json`, which is used to size the production jobs.
 
 ## Running
@@ -182,50 +161,55 @@ It then times a ground-state sweep and a TDVP step on the cell's real model and 
 # 1. model inputs (needs the group's private pyqcpbc/ueg stack; skip if models/*.npz exist)
 python generate_model.py --bath lda
 python generate_model.py --bath hf
-# 2. everything else, as a SLURM chain per cell (setup -> check -> gs -> td array -> analyze)
+# 2. everything else, as a SLURM chain per bath (setup -> check -> gs -> td array -> analyze)
 bash submit.sh --dry                     # print the sbatch commands
-bash submit.sh                           # all four cells on the joonholee partition
-bash submit.sh --cells "lda_onehole" --gpu
+bash submit.sh                           # both baths on the joonholee partition
+bash submit.sh --baths "lda" --gpu
 # 3. the figure
 python plot_fig1a.py                     # -> fig1a_qb_dmrg.png
 ```
 
-Single stages run directly, e.g.
-`python run_tddmrg.py --stage check --bath lda --sector onehole`.
+Single stages run directly, e.g. `python run_tddmrg.py --stage check --bath lda`.
 
-- `td` tasks checkpoint every 50 steps (`work/<cell>/td/<tag>_{C,mps}.npz`) and resume
+- `td` tasks checkpoint every 50 steps (`work/<bath>/td/<tag>_{C,mps}.npz`) and resume
   automatically; pass `--fresh` to restart a task.
-- `submit.sh` skips any stage whose `work/<cell>/<stage>.done` exists.
+- `submit.sh` skips any stage whose `work/<bath>/<stage>.done` exists.
 
 ## Files
 
 | file | content |
 |---|---|
-| `qb_dmrg.py` | model construction, sector/mode selection, DMRG ground state, TD correlation function, transform, dense exact diagonalization |
+| `qb_dmrg.py` | model construction, DMRG ground state, TD correlation function, transform, dense exact diagonalization |
 | `run_tddmrg.py` | stages `check`, `gs`, `td`, `analyze` and the convergence ladders |
 | `generate_model.py` | builds the model npz (HF SCF, LDA eigenvalues, per-q dRPA) |
 | `submit.sh` | SLURM chain |
-| `plot_fig1a.py` | McClain Fig. 1a with our spectra overlaid |
+| `plot_fig1a.py` | McClain Fig. 1a with our two spectra overlaid |
 | `models/` | model inputs (see `models/README.md`) |
 | `reference/claude_fig1a_*.csv` | McClain Fig. 1a curves, vector-extracted from the published PDF (absolute ω in eV, A in 1/eV; the header of each file gives the provenance) |
 
-## Open questions for review
+## Design choices
 
-1. **Site ordering.** Bosons are interleaved with a fixed stride, and fermions are in npz
-   k-order. Would a better ordering lower the bond dimension significantly? Candidates:
-   order k by |k| or ε, and place each (ν, ±q) pair next to the k-shells it connects.
-2. **Symmetries.** Only U(1) particle number is used. Total momentum (the hole has K = 0)
-   and S_z are also conserved. Is it worth encoding them as extra quantum numbers in
-   Renormalizer?
-3. **Integrator.** We use 1-site TDVP (`tdvp_ps`) at fixed M after `expand_bond_dimension`.
-   Would you start with `tdvp_ps2` (2-site) for the first few steps, or use it throughout?
-   Is dt = 0.5 a.u. reasonable here?
-4. **Two-way trick.** Does C(t) = φ(t/2)ᵀφ(t/2) hold as implemented? We rely on a real H,
-   a real ground state and `Mps.dot` being bilinear. The `check` stage tests it on the tiny
-   model.
-5. **Boson truncation.** The ground-state test (top-level occupation) underestimates what the
-   satellite needs. Is the nbas ladder in `td` the right way to settle it?
-6. **Mode truncation.** If the bath can be truncated, the `modes_g2` / `modes_qshell` ladders
-   should show it. Is there a smarter criterion?
-7. **Madelung in the dRPA@HF bath.** This is deliberate (see the Model section), but worth
-   a second opinion.
+Comments from the reviewer are still welcome on any of these.
+
+1. **Site ordering.** The coupling a†_{k+q} a_k b connects every k to every k+q, so no
+   ordering makes the Hamiltonian local in the MPS chain. Fermions are sorted by ε_k (shells
+   contiguous, ↑↓ adjacent) and bosons are interleaved uniformly, so every boson sits at a
+   bounded distance from the fermion sites. If `timing.json` or the M ladder shows bond
+   dimensions blowing up, the first thing to try is grouping each (ν, ±q) pair next to the
+   shell it couples most strongly.
+2. **Symmetries.** Only U(1) particle number is used. Total momentum is conserved exactly
+   (there is no umklapp in this basis), but Renormalizer's `BasisSHO` carries no quantum
+   numbers and its random-MPS initializer assumes non-negative quantum numbers, so encoding
+   momentum would mean patching the library. S_z (as separate N↑, N↓) would give at most
+   about 2× and is left out until the timing probe says it is needed.
+3. **Integrator.** 2-site TDVP (`tdvp_ps2`) runs until the bond dimension reaches M, then
+   the code switches to 1-site TDVP (`tdvp_ps`). This avoids the random padding that
+   `expand_bond_dimension` needs for 1-site TDVP from the start. dt = 0.5 a.u. keeps
+   dt·‖H_local‖ well below 1 for single-particle and plasmon energies of a few tenths of a
+   hartree; `check` measures the TDVP error at this dt on the tiny model.
+4. **Two-way trick.** It is kept as the default. It relies on a real H, a real ground state
+   and the bilinear `Mps.dot`; the code asserts the realness, and `check` compares both
+   propagation schemes with the exact Lehmann sum.
+5. **Boson truncation.** The ground-state test underestimates what the satellite needs (the
+   n-th plasmon replica needs n_max ≥ n), so the nbas ladder is run in `td`, on the spectrum
+   itself.

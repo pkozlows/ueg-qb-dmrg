@@ -1,11 +1,11 @@
 #!/bin/bash
 # TD-DMRG A_{k=0}(w) of the 14e19o quasiboson Hamiltonians on FASRC (SLURM).
-#   per bath:  setup (generate_model.py)
-#   per cell (bath x sector):  check -> gs -> td (array, one ladder point per task) -> analyze
-# chained with afterok. A stage is skipped if work/<cell>/<stage>.done exists (or, for setup,
+#   per bath (lda, hf):  setup (generate_model.py) -> check -> gs -> td (array, one ladder
+#   point per task) -> analyze, chained with afterok. A stage is skipped if
+#   work/<bath>/<stage>.done exists (or, for setup,
 # if the model npz exists); delete it to force a rerun.
 #
-# usage:  bash submit.sh [--cells "lda_full hf_full lda_onehole hf_onehole"] [--from check|gs|td|analyze]
+# usage:  bash submit.sh [--baths "lda hf"] [--from check|gs|td|analyze]
 #                        [--gpu] [--dry]
 #   --gpu  run gs/td on one A100 (needs `pip install cupy-cuda12x` in the env; Renormalizer
 #          then offloads the Krylov/contraction work, SVDs stay on the CPU)
@@ -13,11 +13,11 @@
 set -euo pipefail
 WD=$(cd "$(dirname "$0")" && pwd)
 PY=${PY:-/n/home03/pkozlowski/.conda/envs/mcgw_env/bin/python}
-CELLS="lda_full hf_full lda_onehole hf_onehole"
+BATHS="lda hf"
 FROM=check; GPU=0; DRY=0
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --cells) CELLS=$2; shift 2;;
+        --baths) BATHS=$2; shift 2;;
         --from) FROM=$2; shift 2;;
         --gpu) GPU=1; shift;;
         --dry) DRY=1; shift;;
@@ -50,7 +50,7 @@ sb() {   # job name, dependency array name, sbatch args... -- command ; echoes j
 }
 
 declare -A setup_dep
-for bath in lda hf; do
+for bath in $BATHS; do
     model=$WD/models/model_14e19o_k0_$bath.npz
     nodep=()
     if [[ -f $model ]]; then setup_dep[$bath]=""; continue; fi
@@ -59,10 +59,10 @@ for bath in lda hf; do
     echo "setup_$bath -> $id"; setup_dep[$bath]=$id
 done
 
-for cell in $CELLS; do
-    bath=${cell%_*}; sector=${cell#*_}
+for bath in $BATHS; do
+    cell=$bath
     W=$WD/work/$cell; mkdir -p "$W"
-    R="$PY $WD/run_tddmrg.py --bath $bath --sector $sector"
+    R="$PY $WD/run_tddmrg.py --bath $bath"
     dep=(); [[ -n ${setup_dep[$bath]} ]] && dep=(--dependency=afterok:${setup_dep[$bath]})
     for i in "${!order[@]}"; do
         stage=${order[$i]}
