@@ -83,10 +83,16 @@ def run_hf(SCF, minimizer, prog, hcore, cholJ, cholK, nbsf, nocc):
             self.m_ek = [eK.real]
             return (e1 + eJ + eK).real
 
+    # pyqcpbc keeps raw pointers to these, so every object handed to it must stay bound to
+    # a Python name until the SCF is done (passing temporaries segfaults mid-SCF)
     dm0 = np.random.random((nbsf, nbsf))
     dm0 += dm0.T
-    mf = SCF.scf(prog, FockBuilder(prog), nbsf, nocc, nocc, np.eye(nbsf), np.eye(nbsf))
-    mf.set_dm([dm0])
+    dm_list = [dm0]
+    ovlp = np.eye(nbsf)
+    xmat = np.eye(nbsf)
+    fb = FockBuilder(prog)
+    mf = SCF.scf(prog, fb, nbsf, nocc, nocc, ovlp, xmat)
+    mf.set_dm(dm_list)
     solver = minimizer()
     solver.cfg("algorithm", "diis")
     solver.cfg("maxiter", 1000)
