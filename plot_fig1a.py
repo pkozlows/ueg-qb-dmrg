@@ -1,6 +1,6 @@
 """McClain et al. 2016 Fig 1a (14e19o, rs=4, k=0, eta=0.2 eV) with the TD-DMRG spectra of
 the dRPA@HF quasiboson Hamiltonian overlaid, one curve per Madelung scheme (work/ = shifted
-Ewald, work_standard/ = standard Ewald + shift). A curve whose A_k0_td.dat does not exist yet
+Ewald, work_standard/ = standard Ewald + shift, work_selfenergy/ = shifted Ewald for Sigma only). A curve whose A_k0_td.dat does not exist yet
 is skipped, so this can be run while jobs are still going.
 
     python plot_fig1a.py [--out fig1a_qb_dmrg.png]
@@ -25,7 +25,8 @@ MCCLAIN = [("ccsd", "CCSD", dict(color="#d6b9da", lw=4)),
            ("ldagwc", "LDA+GW+C", dict(color="#4b9a4b", lw=1, ls="-."))]
 
 OURS = [("work", "QB dRPA@HF, shifted Ewald (TD-DMRG)", dict(color="C4", lw=2)),
-        ("work_standard", "QB dRPA@HF, standard Ewald + shift (TD-DMRG)", dict(color="C1", lw=2))]
+        ("work_standard", "QB dRPA@HF, standard Ewald + shift (TD-DMRG)", dict(color="C1", lw=2)),
+        ("work_selfenergy", "QB dRPA@HF, shifted Ewald for Sigma only (TD-DMRG)", dict(color="C2", lw=2))]
 
 
 def main():

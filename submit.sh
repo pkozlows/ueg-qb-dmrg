@@ -4,11 +4,13 @@
 #   chained with afterok. A stage is skipped if <workdir>/<stage>.done exists (or, for setup, if
 #   the model npz exists); delete it to force a rerun.
 #
-# usage:  bash submit.sh [--scheme shifted|standard] [--from check|gs|td|analyze]
+# usage:  bash submit.sh [--scheme shifted|standard|selfenergy] [--from check|gs|td|analyze]
 #                        [--gpu] [--dry]
 #   --scheme  Madelung scheme (README "Two Madelung schemes"). shifted (default): shifted Ewald
 #             throughout, models/model_14e19o_k0.npz, work/. standard: standard Ewald + shift at
-#             the end, models/model_14e19o_k0_standard.npz, work_standard/, job names qbdmrg_std_*
+#             the end, models/model_14e19o_k0_standard.npz, work_standard/, job names qbdmrg_std_*.
+#             selfenergy: shifted Ewald just for the self-energy, ..._selfenergy.npz,
+#             work_selfenergy/, job names qbdmrg_se_*
 #   --gpu  run gs/td on one A100 (needs `pip install cupy-cuda12x` in the env; Renormalizer
 #          then offloads the Krylov/contraction work, SVDs stay on the CPU)
 #   --dry  print the sbatch commands instead of submitting
@@ -31,6 +33,8 @@ case $SCHEME in
     shifted)  MODEL=$WD/models/model_14e19o_k0.npz; W=$WD/work; PFX=""; SARG="";;
     standard) MODEL=$WD/models/model_14e19o_k0_standard.npz; W=$WD/work_standard; PFX="std_"
               SARG=" --scheme standard";;
+    selfenergy) MODEL=$WD/models/model_14e19o_k0_selfenergy.npz; W=$WD/work_selfenergy; PFX="se_"
+              SARG=" --scheme selfenergy";;
     *) echo "unknown scheme $SCHEME"; exit 1;;
 esac
 NT=$($PY $WD/run_tddmrg.py --stage ntasks)

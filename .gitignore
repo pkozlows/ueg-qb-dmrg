@@ -2,6 +2,7 @@ __pycache__/
 logs/
 work/
 work_standard/
+work_selfenergy/
 *.tmp
 *.done
 fig1a_qb_dmrg.png

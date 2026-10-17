@@ -1,9 +1,11 @@
 """Hole spectral function A_{k=0}(omega) of the 14e19o quasiboson Hamiltonian by TD-DMRG.
 
-HF band + dRPA@HF plasmons, in one of two Madelung schemes (--scheme):
+HF band + dRPA@HF plasmons, in one of three Madelung schemes (--scheme):
   shifted   shifted Ewald throughout (models/model_14e19o_k0.npz, work/)
   standard  standard Ewald, spectrum shifted by v_M/2 at the end
             (models/model_14e19o_k0_standard.npz, work_standard/)
+  selfenergy shifted Ewald just for the self-energy: shifted H_el, Madelung-free bath, no shift
+            (models/model_14e19o_k0_selfenergy.npz, work_selfenergy/)
 All 19 k-points, 14 electrons and every plasmon mode are kept.
 
 Stages (each reads the model npz, never re-runs SCF):
@@ -348,11 +350,11 @@ def stage_analyze(args):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stage", required=True, choices=["check", "gs", "td", "analyze", "ntasks"])
-    ap.add_argument("--scheme", choices=["shifted", "standard"], default="shifted",
+    ap.add_argument("--scheme", choices=["shifted", "standard", "selfenergy"], default="shifted",
                     help="Madelung scheme; picks the default --model and --workdir")
     ap.add_argument("--model", default=None,
-                    help="default models/model_14e19o_k0.npz (shifted) or ..._standard.npz")
-    ap.add_argument("--workdir", default=None, help="default work/ (shifted) or work_standard/")
+                    help="default models/model_14e19o_k0.npz (shifted) or ..._<scheme>.npz")
+    ap.add_argument("--workdir", default=None, help="default work/ (shifted) or work_<scheme>/")
     ap.add_argument("--task", type=int, default=0, help="td array index (see --stage ntasks)")
     ap.add_argument("--fresh", action="store_true", help="td: ignore an existing checkpoint")
     a = ap.parse_args()

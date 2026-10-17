@@ -2,14 +2,17 @@
 
     python generate_model.py                     # shifted Ewald -> models/model_14e19o_k0.npz
     python generate_model.py --scheme standard   # -> models/model_14e19o_k0_standard.npz
+    python generate_model.py --scheme selfenergy # -> models/model_14e19o_k0_selfenergy.npz
 
-Two Madelung schemes (README "Two Madelung schemes"); in both the plasmons are per-q dRPA@HF
-bosons (Omega_{nu q}, g_nu(q)) from `drpa_chol` on the same eigenvalues that enter H_el:
+Three Madelung schemes (README "Madelung schemes"); the plasmons are per-q dRPA@HF bosons
+(Omega_{nu q}, g_nu(q)) from `drpa_chol`:
   shifted  : `hfes_prew`, probe-charge HF, eps = k^2/2 + Sigma^x - |v_M| n_k (occupied levels
              carry -|v_M|). The Casida diagonal gets +|v_M|; no shift afterwards.
   standard : `hfes_unsh`, standard Ewald, eps = k^2/2 + Sigma^x - |v_M|/2 for every k. The
              uniform shift cancels in the Casida gaps (Madelung-free Omega, X+Y); the removal
              spectrum is shifted by -|v_M|/2 at the end (stored as omega_shift_ha = v_M/2).
+  selfenergy: shifted Ewald just for the self-energy: H_el uses `hfes_prew` (as shifted), the
+             bath is dRPA on `hfes_unsh` (Madelung-free Omega, X+Y, as standard); no shift.
 
 Provenance only: needs the group's private pyqcpbc / ueg / pyscf_gw stack (path below).
 Everything downstream (run_tddmrg.py) needs only the npz.
@@ -114,8 +117,8 @@ def run_hf(SCF, minimizer, prog, hcore, cholJ, cholK, nbsf, nocc, charge=True, x
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--scheme", choices=["shifted", "standard"], default="shifted")
-    ap.add_argument("--save", default=None, help="default models/model_14e19o_k0[_standard].npz")
+    ap.add_argument("--scheme", choices=["shifted", "standard", "selfenergy"], default="shifted")
+    ap.add_argument("--save", default=None, help="default models/model_14e19o_k0[_<scheme>].npz")
     ap.add_argument("--seed", type=int, default=0, help="random SCF guess")
     args = ap.parse_args()
     save = args.save or os.path.join(
@@ -154,9 +157,10 @@ def main():
     print(f"v_M = {xi:.10f} Ha; max |(prew - unsh) -/+ v_M/2| = {err:.2e} Ha")
     assert err < 1e-6, err
 
-    eps = hfes_prew if args.scheme == "shifted" else hfes_unsh
-    omega_shift = 0.0 if args.scheme == "shifted" else xi / 2
-    modes = build_modes(aochol_exc, eps, nocc, ueg_exc, drpa_chol)   # dRPA@HF on the same eps
+    eps = hfes_unsh if args.scheme == "standard" else hfes_prew      # F_k in H_el
+    eps_bath = hfes_prew if args.scheme == "shifted" else hfes_unsh  # eigenvalues fed to dRPA
+    omega_shift = xi / 2 if args.scheme == "standard" else 0.0
+    modes = build_modes(aochol_exc, eps_bath, nocc, ueg_exc, drpa_chol)   # dRPA@HF
     kpts = [tuple(int(x) for x in k) for k in ueg_inc.basis]
     eps_hf = {k: e for k, e in zip(kpts, eps)}
     Om = np.array([m["Omega"] for m in modes]) * 27.2114
