@@ -1,21 +1,25 @@
 #!/bin/bash
 # TD-DMRG A_{k=0}(w) of the 14e19o quasiboson Hamiltonians on FASRC (SLURM).
 #   setup (generate_model.py) -> check -> gs -> td (array, one ladder point per task) -> analyze,
-#   chained with afterok. A stage is skipped if work/<stage>.done exists (or, for setup, if
-#   models/model_14e19o_k0.npz exists); delete it to force a rerun.
+#   chained with afterok. A stage is skipped if <workdir>/<stage>.done exists (or, for setup, if
+#   the model npz exists); delete it to force a rerun.
 #
-# usage:  bash submit.sh [--from check|gs|td|analyze]
+# usage:  bash submit.sh [--scheme shifted|standard] [--from check|gs|td|analyze]
 #                        [--gpu] [--dry]
+#   --scheme  Madelung scheme (README "Two Madelung schemes"). shifted (default): shifted Ewald
+#             throughout, models/model_14e19o_k0.npz, work/. standard: standard Ewald + shift at
+#             the end, models/model_14e19o_k0_standard.npz, work_standard/, job names qbdmrg_std_*
 #   --gpu  run gs/td on one A100 (needs `pip install cupy-cuda12x` in the env; Renormalizer
 #          then offloads the Krylov/contraction work, SVDs stay on the CPU)
 #   --dry  print the sbatch commands instead of submitting
 set -euo pipefail
 WD=$(cd "$(dirname "$0")" && pwd)
 PY=${PY:-/n/home03/pkozlowski/.conda/envs/mcgw_env/bin/python}
-FROM=check; GPU=0; DRY=0
+FROM=check; GPU=0; DRY=0; SCHEME=shifted
 while [[ $# -gt 0 ]]; do
     case $1 in
         --from) FROM=$2; shift 2;;
+        --scheme) SCHEME=$2; shift 2;;
         --gpu) GPU=1; shift;;
         --dry) DRY=1; shift;;
         *) echo "unknown arg $1"; exit 1;;
@@ -23,6 +27,12 @@ while [[ $# -gt 0 ]]; do
 done
 order=(check gs td analyze)
 start=0; for i in "${!order[@]}"; do [[ ${order[$i]} == "$FROM" ]] && start=$i; done
+case $SCHEME in
+    shifted)  MODEL=$WD/models/model_14e19o_k0.npz; W=$WD/work; PFX=""; SARG="";;
+    standard) MODEL=$WD/models/model_14e19o_k0_standard.npz; W=$WD/work_standard; PFX="std_"
+              SARG=" --scheme standard";;
+    *) echo "unknown scheme $SCHEME"; exit 1;;
+esac
 NT=$($PY $WD/run_tddmrg.py --stage ntasks)
 mkdir -p "$WD/logs"
 
@@ -40,6 +50,7 @@ sb() {   # job name, dependency array name, sbatch args... -- command ; echoes j
     local name=$1 depvar=$2; shift 2
     local -n _d=$depvar
     local args=(); while [[ $1 != -- ]]; do args+=("$1"); shift; done; shift
+    name=$PFX$name
     local cmd=(sbatch --parsable -D "$WD" "${_d[@]}" -J "qbdmrg_$name"
                -o "$WD/logs/${name}_%A_%a.out" -e "$WD/logs/${name}_%A_%a.err" "${args[@]}" --wrap "$*")
     if (( DRY )); then echo "${cmd[*]}" >&2; echo "DRY_$name"; return; fi
@@ -47,14 +58,14 @@ sb() {   # job name, dependency array name, sbatch args... -- command ; echoes j
 }
 
 dep=()
-if [[ ! -f $WD/models/model_14e19o_k0.npz ]]; then
+if [[ ! -f $MODEL ]]; then
     nodep=()
-    id=$(sb setup nodep "${cpu[@]}" --mem=50G -t 4:00:00 -- "$PY $WD/generate_model.py")
+    id=$(sb setup nodep "${cpu[@]}" --mem=50G -t 4:00:00 -- "$PY $WD/generate_model.py$SARG")
     echo "setup -> $id"; dep=(--dependency=afterok:$id)
 fi
 
-W=$WD/work; mkdir -p "$W"
-R="$PY $WD/run_tddmrg.py"
+mkdir -p "$W"
+R="$PY $WD/run_tddmrg.py$SARG"
 for i in "${!order[@]}"; do
     stage=${order[$i]}
     if (( i < start )) || [[ -f $W/$stage.done ]]; then echo "skip $stage"; continue; fi

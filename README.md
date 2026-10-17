@@ -11,8 +11,8 @@ broadening η = 0.2 eV). It compares CCSD, CCSDT, DMRG on the full Coulomb Hamil
 HF+GW, LDA+GW and LDA+GW+C.
 
 This repo computes the **exact** k = 0 removal spectrum of a **quasiboson Hamiltonian**
-(HF band, dRPA@HF plasmons) for the same cell with real-time TD-DMRG, and overlays it on
-Fig. 1a. The quasiboson
+(HF band, dRPA@HF plasmons) for the same cell with real-time TD-DMRG, in each of two Madelung
+schemes, and overlays the results on Fig. 1a. The quasiboson
 Hamiltonian is the one that GW (second order in g) and GW+cumulant (frozen hole) approximate.
 Solving it exactly separates "error of the Hamiltonian" from "error of the approximate solution".
 
@@ -24,23 +24,43 @@ H_qb = H_el + H_pl + H_ep
 
 with
 
-- H_el = Σ_{k,σ} ε_k^HF  a†_{kσ} a_{kσ},  where ε_k^HF = k²/2 + Σ^x_k − n_k |v_M|
+- H_el = Σ_{k,σ} ε_k^HF  a†_{kσ} a_{kσ}
 - H_pl = Σ_{ν,q} Ω_{νq}  b†_{νq} b_{νq}
 - H_ep = Σ_{ν,q} Σ_{k,σ} g_ν(q)  a†_{k+q,σ} a_{kσ} ( b†_{ν,−q} + b_{νq} )
 
-Here n_k is the HF occupation and v_M is the Madelung constant. ε^HF is the probe-charge
-shifted-Ewald HF eigenvalue (`hfes_prew`): occupied levels carry −|v_M|, which is the
-Koopmans / charged-excitation convention used for the absolute ω axis of McClain Fig. 1a.
-All 19 k-points (38 spin-orbitals) and 14 electrons are kept, and every plasmon mode is
+The couplings are g_ν(q) = (√2/Ω) Σ_ia v(q) (X+Y)_{ia,νq}, with v(q) = 4π/q² for q ≠ 0
+and v(0) = 0. How ε_k^HF, Ω and X+Y carry the Madelung constant v_M depends on the scheme;
+see [Two Madelung schemes](#two-madelung-schemes). All 19 k-points (38 spin-orbitals) and
+14 electrons are kept, and every plasmon mode is
 included (no bath truncation).
 
 The plasmons (ν labels the dRPA eigenmodes in each momentum-transfer sector q) and their
-couplings come from a per-q direct-RPA (Casida) calculation on the same HF eigenvalues
-(`hfes_prew`), i.e. **dRPA@HF**. The model is stored in `models/model_14e19o_k0.npz`.
+couplings come from a per-q direct-RPA (Casida) calculation on the same HF eigenvalues that
+enter H_el, i.e. **dRPA@HF**.
 
 g_ν(q) = |V^ν_{k,k−q}(q)| is independent of k for plane-wave orbitals.
 
-**Madelung term in the dRPA@HF bath.** Normal-ordering the finite-cell Hamiltonian (which
+### Two Madelung schemes
+
+v_M = −0.18257 Ha (−4.968 eV) for this cell (`madelung_xi` in the npz). In what follows,
+ε^HF_k = k²/2 + Σ^x_k is the Madelung-free HF energy.
+
+| | **shifted Ewald throughout** (`--scheme shifted`, default) | **standard Ewald, shift at the end** (`--scheme standard`) |
+|---|---|---|
+| F_k in H_el | ε^HF_k − \|v_M\| n_k (`hfes_prew`, probe-charge HF) | ε^HF_k − \|v_M\|/2 for every k (`hfes_unsh`) |
+| Casida A_{ia,jb} | δ_ij δ_ab (ε^HF_a − ε^HF_i + \|v_M\|) + (ia\|bj) | δ_ij δ_ab (ε^HF_a − ε^HF_i) + (ia\|bj) |
+| Casida B_{ia,jb} | (ia\|jb) | (ia\|jb) |
+| Ω_ν, (X+Y) | include the Madelung term | Madelung-free |
+| removal spectrum | used as is | shifted by −\|v_M\|/2 = −2.484 eV |
+| model / work dir | `models/model_14e19o_k0.npz`, `work/` | `models/model_14e19o_k0_standard.npz`, `work_standard/` |
+
+In both schemes dRPA is run on the same eigenvalues that enter H_el (in the standard scheme the
+uniform shift cancels in the Casida gaps). The end shift is a constant, so it is applied only
+in `analyze` (`omega_shift_ha` = v_M/2 in the standard npz; A(ω) = A_raw(ω − v_M/2)).
+`generate_model.py` runs both SCFs and asserts `hfes_prew − hfes_unsh` = +v_M/2 on occupied
+and −v_M/2 on virtual levels.
+
+**Why the shifted scheme has +|v_M| on the Casida diagonal.** Normal-ordering the finite-cell Hamiltonian (which
 excludes q = 0) with respect to |Φ₀⟩ gives Ĥ_N = F̂ + V̂_res with F_kk = k²/2 + Σ^x_k − |v_M|/2.
 In this partitioning the orbital Hessian is
 
@@ -50,8 +70,8 @@ B_{iq,j−q} = (2v_q − v_{|k_i−k_j+q|})/Ω,
 where ε^HF here excludes the Madelung term. The extra +|v_M| on the diagonal comes from the
 q ≠ 0 restriction in the exchange term. The direct approximation drops the exchange terms
 but keeps this diagonal shift, so dRPA@HF is the Casida problem built on
-ε̃_k = k²/2 + Σ^x_k − |v_M| n_k, which is exactly `hfes_prew`. The bath therefore includes
-the Madelung shift by construction; its strongest plasmon sits near 10.6 eV.
+ε̃_k = k²/2 + Σ^x_k − |v_M| n_k, which is exactly `hfes_prew`. That bath therefore includes
+the Madelung shift by construction; its plasmons span 7.2–11.3 eV.
 
 ### Mapping to Renormalizer (`qb_dmrg.py`)
 
@@ -155,20 +175,23 @@ It then times a ground-state sweep and a TDVP step on the real model and writes
 ```bash
 # 0. environment: renormalizer 0.0.11, numpy, scipy, matplotlib (GPU: + cupy-cuda12x)
 # 1. model inputs (needs the group's private pyqcpbc/ueg stack; skip if models/*.npz exist)
-python generate_model.py                 # -> models/model_14e19o_k0.npz
+python generate_model.py                     # shifted Ewald -> models/model_14e19o_k0.npz
+python generate_model.py --scheme standard   # -> models/model_14e19o_k0_standard.npz
 # 2. everything else, as a SLURM chain (setup -> check -> gs -> td array -> analyze)
 bash submit.sh --dry                     # print the sbatch commands
-bash submit.sh                           # on the joonholee partition
+bash submit.sh                           # shifted Ewald, on the joonholee partition
+bash submit.sh --scheme standard         # standard Ewald + shift (jobs qbdmrg_std_*)
 bash submit.sh --gpu                     # gs/td on one A100
 # 3. the figure
 python plot_fig1a.py                     # -> fig1a_qb_dmrg.png
 ```
 
-Single stages run directly, e.g. `python run_tddmrg.py --stage check`.
+Single stages run directly, e.g. `python run_tddmrg.py --stage check [--scheme standard]`.
 
-- `td` tasks checkpoint every 50 steps (`work/td/<tag>_{C,mps}.npz`) and resume
+- `td` tasks checkpoint every 50 steps (`<workdir>/td/<tag>_{C,mps}.npz`) and resume
   automatically; pass `--fresh` to restart a task.
-- `submit.sh` skips any stage whose `work/<stage>.done` exists.
+- `submit.sh` skips any stage whose `<workdir>/<stage>.done` exists (`work/` or
+  `work_standard/`).
 
 ## Files
 
@@ -176,9 +199,9 @@ Single stages run directly, e.g. `python run_tddmrg.py --stage check`.
 |---|---|
 | `qb_dmrg.py` | model construction, DMRG ground state, TD correlation function, transform, dense exact diagonalization |
 | `run_tddmrg.py` | stages `check`, `gs`, `td`, `analyze` and the convergence ladders |
-| `generate_model.py` | builds the model npz (HF SCF, per-q dRPA@HF) |
+| `generate_model.py` | builds the model npz for either scheme (HF SCFs, per-q dRPA@HF) |
 | `submit.sh` | SLURM chain |
-| `plot_fig1a.py` | McClain Fig. 1a with our spectrum overlaid |
+| `plot_fig1a.py` | McClain Fig. 1a with our spectra (both schemes) overlaid |
 | `models/` | model inputs (see `models/README.md`) |
 | `reference/claude_fig1a_*.csv` | McClain Fig. 1a curves, vector-extracted from the published PDF (absolute ω in eV, A in 1/eV; the header of each file gives the provenance) |
 

@@ -1,10 +1,15 @@
 """Write the quasiboson model inputs for the 14e19o UEG cell (rs=4, 19 plane waves).
 
-    python generate_model.py              # -> models/model_14e19o_k0.npz
+    python generate_model.py                     # shifted Ewald -> models/model_14e19o_k0.npz
+    python generate_model.py --scheme standard   # -> models/model_14e19o_k0_standard.npz
 
-H_el uses the probe-charge-Ewald HF eigenvalues `hfes_prew` (occupied levels carry -|v_M|,
-the Koopmans/charged-excitation convention of McClain Fig 1a). The plasmons are per-q dRPA@HF
-bosons (Omega_{nu q}, g_nu(q)) from `drpa_chol` on the same `hfes_prew` (see README "Madelung").
+Two Madelung schemes (README "Two Madelung schemes"); in both the plasmons are per-q dRPA@HF
+bosons (Omega_{nu q}, g_nu(q)) from `drpa_chol` on the same eigenvalues that enter H_el:
+  shifted  : `hfes_prew`, probe-charge HF, eps = k^2/2 + Sigma^x - |v_M| n_k (occupied levels
+             carry -|v_M|). The Casida diagonal gets +|v_M|; no shift afterwards.
+  standard : `hfes_unsh`, standard Ewald, eps = k^2/2 + Sigma^x - |v_M|/2 for every k. The
+             uniform shift cancels in the Casida gaps (Madelung-free Omega, X+Y); the removal
+             spectrum is shifted by -|v_M|/2 at the end (stored as omega_shift_ha = v_M/2).
 
 Provenance only: needs the group's private pyqcpbc / ueg / pyscf_gw stack (path below).
 Everything downstream (run_tddmrg.py) needs only the npz.
@@ -67,14 +72,18 @@ def build_modes(mochol, moes, nocc, ueg, drpa_chol, tol=1e-12):
     return modes
 
 
-def run_hf(SCF, minimizer, prog, hcore, cholJ, cholK, nbsf, nocc):
-    """RHF on the UEG integrals, shifted Ewald + probe charge (occupied levels carry -|v_M|)."""
+def run_hf(SCF, minimizer, prog, hcore, cholJ, cholK, nbsf, nocc, charge=True, xi=None):
+    """RHF on the UEG integrals.
+    charge=True : shifted Ewald + probe charge (K with the G=0 head; occupied levels carry -|v_M|).
+    charge=False: standard Ewald (K without the G=0 head, hcore + xi/2 with xi = v_M < 0), so
+                  every level carries the uniform shift v_M/2."""
     class FockBuilder(SCF.fock_builder):
         def make(self, dm):
             dma = dm[0]
             J = 2.0 * np.einsum("prX,qsX,qs->pr", cholJ, cholJ, dma, optimize=True)
-            K = -1.0 * np.einsum("prX,qsX,rs->pq", cholK, cholK, dma, optimize=True)
-            h = hcore
+            chK = cholK if charge else cholJ
+            K = -1.0 * np.einsum("prX,qsX,rs->pq", chK, chK, dma, optimize=True)
+            h = hcore if charge else hcore + 0.5 * xi * np.eye(nbsf)
             e1 = 2.0 * np.trace(h @ dma)
             eJ, eK = np.trace(J @ dma), np.trace(K @ dma)
             self.m_fock = [h + J + K]
@@ -98,16 +107,20 @@ def run_hf(SCF, minimizer, prog, hcore, cholJ, cholK, nbsf, nocc):
     solver.cfg("maxiter", 1000)
     solver.cfg("tol", 1e-9)
     solver.run(mf)
-    mf.extra_diagon_fock()
+    if charge:
+        mf.extra_diagon_fock()
     return np.array(np.squeeze(mf.get_eorb()[0]))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--save", default=os.path.join(HERE, "models", "model_14e19o_k0.npz"))
+    ap.add_argument("--scheme", choices=["shifted", "standard"], default="shifted")
+    ap.add_argument("--save", default=None, help="default models/model_14e19o_k0[_standard].npz")
     ap.add_argument("--seed", type=int, default=0, help="random SCF guess")
     args = ap.parse_args()
-    save = args.save
+    save = args.save or os.path.join(
+        HERE, "models", "model_14e19o_k0.npz" if args.scheme == "shifted"
+        else f"model_14e19o_k0_{args.scheme}.npz")
 
     import pyqcpbc
     from pyqcpbc.OPT import minimizer
@@ -133,17 +146,28 @@ def main():
     cholK = (2 * ueg_inc.chol_vecsK.toarray()).reshape(nbsf, nbsf, -1)
     hcore = ueg_inc.H1[0]
 
-    hfes_prew = run_hf(SCF, minimizer, prog, hcore, cholJ, cholK, nbsf, nocc)
-    modes = build_modes(aochol_exc, hfes_prew, nocc, ueg_exc, drpa_chol)   # dRPA@HF
+    hfes_prew = run_hf(SCF, minimizer, prog, hcore, cholJ, cholK, nbsf, nocc, charge=True)
+    hfes_unsh = run_hf(SCF, minimizer, prog, hcore, cholJ, cholK, nbsf, nocc, charge=False, xi=xi)
+    # the two schemes differ only by the Madelung bookkeeping: prew - unsh = +v_M/2 (occ), -v_M/2 (vir)
+    d = hfes_prew - hfes_unsh
+    err = max(np.max(np.abs(d[:nocc] - xi / 2)), np.max(np.abs(d[nocc:] + xi / 2)))
+    print(f"v_M = {xi:.10f} Ha; max |(prew - unsh) -/+ v_M/2| = {err:.2e} Ha")
+    assert err < 1e-6, err
+
+    eps = hfes_prew if args.scheme == "shifted" else hfes_unsh
+    omega_shift = 0.0 if args.scheme == "shifted" else xi / 2
+    modes = build_modes(aochol_exc, eps, nocc, ueg_exc, drpa_chol)   # dRPA@HF on the same eps
     kpts = [tuple(int(x) for x in k) for k in ueg_inc.basis]
-    eps_hf = {k: e for k, e in zip(kpts, hfes_prew)}
+    eps_hf = {k: e for k, e in zip(kpts, eps)}
     Om = np.array([m["Omega"] for m in modes]) * 27.2114
     g = np.array([m["g"] for m in modes])
-    print(f"dRPA@HF: {len(modes)} modes, Omega {Om.min():.3f}..{Om.max():.3f} eV, "
-          f"|g| {g.min():.3e}..{g.max():.3e} Ha; HF 2*sum(eps_occ) = {2*np.sum(hfes_prew[:nocc]):.10f} Ha")
+    print(f"{args.scheme} Ewald, dRPA@HF: {len(modes)} modes, Omega {Om.min():.3f}..{Om.max():.3f} eV, "
+          f"|g| {g.min():.3e}..{g.max():.3e} Ha; 2*sum(eps_occ) = {2*np.sum(eps[:nocc]):.10f} Ha; "
+          f"omega shift {omega_shift*27.2114:+.4f} eV")
     os.makedirs(os.path.dirname(save), exist_ok=True)
-    save_inputs(save, kpts, eps_hf, modes, ueg_inc.nelec, bath="drpa@hf", rs=RS,
-                hfes_prew=hfes_prew, madelung_xi=xi)
+    save_inputs(save, kpts, eps_hf, modes, ueg_inc.nelec, bath="drpa@hf", scheme=args.scheme,
+                omega_shift_ha=omega_shift, rs=RS, hfes_prew=hfes_prew, hfes_unsh=hfes_unsh,
+                madelung_xi=xi)
     print(f"wrote {save}")
 
 

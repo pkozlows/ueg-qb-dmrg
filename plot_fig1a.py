@@ -1,6 +1,7 @@
 """McClain et al. 2016 Fig 1a (14e19o, rs=4, k=0, eta=0.2 eV) with the TD-DMRG spectra of
-the dRPA@HF quasiboson Hamiltonian overlaid (skipped if work/A_k0_td.dat does not exist
-yet, so this can be run while jobs are still going).
+the dRPA@HF quasiboson Hamiltonian overlaid, one curve per Madelung scheme (work/ = shifted
+Ewald, work_standard/ = standard Ewald + shift). A curve whose A_k0_td.dat does not exist yet
+is skipped, so this can be run while jobs are still going.
 
     python plot_fig1a.py [--out fig1a_qb_dmrg.png]
 """
@@ -23,7 +24,8 @@ MCCLAIN = [("ccsd", "CCSD", dict(color="#d6b9da", lw=4)),
            ("ldagw", "LDA+GW", dict(color="#3a57a7", lw=1, ls="--")),
            ("ldagwc", "LDA+GW+C", dict(color="#4b9a4b", lw=1, ls="-."))]
 
-OURS = ("QB dRPA@HF, TD-DMRG", dict(color="C4", lw=2))
+OURS = [("work", "QB dRPA@HF, shifted Ewald (TD-DMRG)", dict(color="C4", lw=2)),
+        ("work_standard", "QB dRPA@HF, standard Ewald + shift (TD-DMRG)", dict(color="C1", lw=2))]
 
 
 def main():
@@ -34,12 +36,13 @@ def main():
     for name, label, sty in MCCLAIN:
         d = np.loadtxt(os.path.join(REF, f"claude_fig1a_{name}.csv"), delimiter=",", comments="#")
         ax.plot(d[:, 0], d[:, 1], label=f"{label} (McClain)", **sty)
-    f = os.path.join(HERE, "work", "A_k0_td.dat")
-    if os.path.exists(f):
-        d = np.loadtxt(f)
-        ax.plot(d[:, 0], d[:, 1], label=OURS[0], **OURS[1])
-    else:
-        print(f"missing {f} (skipped)")
+    for workdir, label, sty in OURS:
+        f = os.path.join(HERE, workdir, "A_k0_td.dat")
+        if os.path.exists(f):
+            d = np.loadtxt(f)       # omega axis already includes the scheme's end shift
+            ax.plot(d[:, 0], d[:, 1], label=label, **sty)
+        else:
+            print(f"missing {f} (skipped)")
     ax.set_xlabel(r"$\omega$ (eV)")
     ax.set_ylabel(r"$A_{k=0}(\omega)$ (1/eV)")
     ax.set_xlim(-20, -2)
