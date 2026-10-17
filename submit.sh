@@ -1,11 +1,10 @@
 #!/bin/bash
 # TD-DMRG A_{k=0}(w) of the 14e19o quasiboson Hamiltonians on FASRC (SLURM).
-#   per bath (lda, hf):  setup (generate_model.py) -> check -> gs -> td (array, one ladder
-#   point per task) -> analyze, chained with afterok. A stage is skipped if
-#   work/<bath>/<stage>.done exists (or, for setup,
-# if the model npz exists); delete it to force a rerun.
+#   setup (generate_model.py) -> check -> gs -> td (array, one ladder point per task) -> analyze,
+#   chained with afterok. A stage is skipped if work/<stage>.done exists (or, for setup, if
+#   models/model_14e19o_k0.npz exists); delete it to force a rerun.
 #
-# usage:  bash submit.sh [--baths "lda hf"] [--from check|gs|td|analyze]
+# usage:  bash submit.sh [--from check|gs|td|analyze]
 #                        [--gpu] [--dry]
 #   --gpu  run gs/td on one A100 (needs `pip install cupy-cuda12x` in the env; Renormalizer
 #          then offloads the Krylov/contraction work, SVDs stay on the CPU)
@@ -13,11 +12,9 @@
 set -euo pipefail
 WD=$(cd "$(dirname "$0")" && pwd)
 PY=${PY:-/n/home03/pkozlowski/.conda/envs/mcgw_env/bin/python}
-BATHS="lda hf"
 FROM=check; GPU=0; DRY=0
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --baths) BATHS=$2; shift 2;;
         --from) FROM=$2; shift 2;;
         --gpu) GPU=1; shift;;
         --dry) DRY=1; shift;;
@@ -49,33 +46,26 @@ sb() {   # job name, dependency array name, sbatch args... -- command ; echoes j
     local id; id=$("${cmd[@]}"); echo "${id%%;*}"
 }
 
-declare -A setup_dep
-for bath in $BATHS; do
-    model=$WD/models/model_14e19o_k0_$bath.npz
+dep=()
+if [[ ! -f $WD/models/model_14e19o_k0.npz ]]; then
     nodep=()
-    if [[ -f $model ]]; then setup_dep[$bath]=""; continue; fi
-    id=$(sb "setup_$bath" nodep "${cpu[@]}" --mem=50G -t 4:00:00 -- \
-         "$PY $WD/generate_model.py --bath $bath")
-    echo "setup_$bath -> $id"; setup_dep[$bath]=$id
-done
+    id=$(sb setup nodep "${cpu[@]}" --mem=50G -t 4:00:00 -- "$PY $WD/generate_model.py")
+    echo "setup -> $id"; dep=(--dependency=afterok:$id)
+fi
 
-for bath in $BATHS; do
-    cell=$bath
-    W=$WD/work/$cell; mkdir -p "$W"
-    R="$PY $WD/run_tddmrg.py --bath $bath"
-    dep=(); [[ -n ${setup_dep[$bath]} ]] && dep=(--dependency=afterok:${setup_dep[$bath]})
-    for i in "${!order[@]}"; do
-        stage=${order[$i]}
-        if (( i < start )) || [[ -f $W/$stage.done ]]; then echo "$cell: skip $stage"; continue; fi
-        case $stage in
-            check)   id=$(sb "${cell}_check" dep "${cpu[@]}" --mem=100G -t 12:00:00 -- "$R --stage check");;
-            gs)      id=$(sb "${cell}_gs" dep "${heavy[@]}" --mem=180G -t $heavy_t -- "$pre$R --stage gs");;
-            td)      id=$(sb "${cell}_td" dep "${heavy[@]}" --mem=180G -t $heavy_t --array=0-$((NT-1)) -- \
-                          "$pre$R --stage td --task \$SLURM_ARRAY_TASK_ID")
-                     dep=(--dependency=afterany:${id%%_*});;   # analyze runs on whatever finished
-            analyze) id=$(sb "${cell}_analyze" dep "${cpu[@]}" --mem=20G -t 1:00:00 -- "$R --stage analyze");;
-        esac
-        echo "$cell: $stage -> $id"
-        [[ $stage != td ]] && dep=(--dependency=afterok:$id)
-    done
+W=$WD/work; mkdir -p "$W"
+R="$PY $WD/run_tddmrg.py"
+for i in "${!order[@]}"; do
+    stage=${order[$i]}
+    if (( i < start )) || [[ -f $W/$stage.done ]]; then echo "skip $stage"; continue; fi
+    case $stage in
+        check)   id=$(sb check dep "${cpu[@]}" --mem=100G -t 12:00:00 -- "$R --stage check");;
+        gs)      id=$(sb gs dep "${heavy[@]}" --mem=180G -t $heavy_t -- "$pre$R --stage gs");;
+        td)      id=$(sb td dep "${heavy[@]}" --mem=180G -t $heavy_t --array=0-$((NT-1)) -- \
+                      "$pre$R --stage td --task \$SLURM_ARRAY_TASK_ID")
+                 dep=(--dependency=afterany:${id%%_*});;   # analyze runs on whatever finished
+        analyze) id=$(sb analyze dep "${cpu[@]}" --mem=20G -t 1:00:00 -- "$R --stage analyze");;
+    esac
+    echo "$stage -> $id"
+    [[ $stage != td ]] && dep=(--dependency=afterok:$id)
 done

@@ -1,6 +1,6 @@
 """McClain et al. 2016 Fig 1a (14e19o, rs=4, k=0, eta=0.2 eV) with the TD-DMRG spectra of
-the quasiboson Hamiltonians overlaid. Baths without a work/<bath>/A_k0_td.dat are
-skipped, so this can be run while jobs are still going.
+the dRPA@HF quasiboson Hamiltonian overlaid (skipped if work/A_k0_td.dat does not exist
+yet, so this can be run while jobs are still going).
 
     python plot_fig1a.py [--out fig1a_qb_dmrg.png]
 """
@@ -23,8 +23,7 @@ MCCLAIN = [("ccsd", "CCSD", dict(color="#d6b9da", lw=4)),
            ("ldagw", "LDA+GW", dict(color="#3a57a7", lw=1, ls="--")),
            ("ldagwc", "LDA+GW+C", dict(color="#4b9a4b", lw=1, ls="-."))]
 
-CELLS = [("lda", "QB dRPA@LDA, TD-DMRG", dict(color="C1", lw=2)),
-         ("hf", "QB dRPA@HF, TD-DMRG", dict(color="C4", lw=2))]
+OURS = ("QB dRPA@HF, TD-DMRG", dict(color="C4", lw=2))
 
 
 def main():
@@ -35,13 +34,12 @@ def main():
     for name, label, sty in MCCLAIN:
         d = np.loadtxt(os.path.join(REF, f"claude_fig1a_{name}.csv"), delimiter=",", comments="#")
         ax.plot(d[:, 0], d[:, 1], label=f"{label} (McClain)", **sty)
-    for bath, label, sty in CELLS:
-        f = os.path.join(HERE, "work", bath, "A_k0_td.dat")
-        if not os.path.exists(f):
-            print(f"missing {f} (skipped)")
-            continue
+    f = os.path.join(HERE, "work", "A_k0_td.dat")
+    if os.path.exists(f):
         d = np.loadtxt(f)
-        ax.plot(d[:, 0], d[:, 1], label=label, **sty)
+        ax.plot(d[:, 0], d[:, 1], label=OURS[0], **OURS[1])
+    else:
+        print(f"missing {f} (skipped)")
     ax.set_xlabel(r"$\omega$ (eV)")
     ax.set_ylabel(r"$A_{k=0}(\omega)$ (1/eV)")
     ax.set_xlim(-20, -2)

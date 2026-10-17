@@ -1,17 +1,14 @@
 """Write the quasiboson model inputs for the 14e19o UEG cell (rs=4, 19 plane waves).
 
-    python generate_model.py --bath lda   # -> models/model_14e19o_k0_lda.npz
-    python generate_model.py --bath hf    # -> models/model_14e19o_k0_hf.npz
+    python generate_model.py              # -> models/model_14e19o_k0.npz
 
 H_el uses the probe-charge-Ewald HF eigenvalues `hfes_prew` (occupied levels carry -|v_M|,
-the Koopmans/charged-excitation convention of McClain Fig 1a). The plasmons are per-q dRPA
-bosons (Omega_{nu q}, g_nu(q)) from `drpa_chol` on
-    --bath lda : LDA eigenvalues  (dRPA@LDA)
-    --bath hf  : hfes_prew        (dRPA@HF, as defined in the note; see README "Madelung")
+the Koopmans/charged-excitation convention of McClain Fig 1a). The plasmons are per-q dRPA@HF
+bosons (Omega_{nu q}, g_nu(q)) from `drpa_chol` on the same `hfes_prew` (see README "Madelung").
 
-Provenance only: needs the group's private pyqcpbc / ueg / pyscf_gw stack and the LDA h5
-(paths below). Everything downstream (run_tddmrg.py) needs only the npz.
-Cleaned from gw-ac/renormalize.py (same SCF, same LDA read, same build_modes).
+Provenance only: needs the group's private pyqcpbc / ueg / pyscf_gw stack (path below).
+Everything downstream (run_tddmrg.py) needs only the npz.
+Cleaned from gw-ac/renormalize.py (same SCF, same build_modes).
 """
 import argparse
 import os
@@ -21,12 +18,10 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 UEG_DIR = os.environ.get("QCPBC_UEG_DIR", "/n/home03/pkozlowski/qcpbc/libpbc/gw_tests/ueg")
-LDA_H5 = os.environ.get("QCPBC_LDA_H5", "/n/home03/pkozlowski/qcpbc/libpbc/tests/lda_corr_v13.h5")
 
 RS = 4.0
 N_ELEC = 14
 NPW = N_ELEC + 5                # 19 plane waves
-NPTS_1D = 23                    # LDA integration grid label in the h5
 
 # dummy pyqcpbc input: only provides the SCF driver; the UEG integrals are injected below
 QCPBC_INP = """$lattice
@@ -72,15 +67,14 @@ def build_modes(mochol, moes, nocc, ueg, drpa_chol, tol=1e-12):
     return modes
 
 
-def run_hf(pyqcpbc, SCF, minimizer, prog, hcore, cholJ, cholK, nbsf, nocc, charge, xi=None):
-    """RHF on the UEG integrals with the shifted-Ewald (+ probe charge if charge) convention."""
+def run_hf(SCF, minimizer, prog, hcore, cholJ, cholK, nbsf, nocc):
+    """RHF on the UEG integrals, shifted Ewald + probe charge (occupied levels carry -|v_M|)."""
     class FockBuilder(SCF.fock_builder):
         def make(self, dm):
             dma = dm[0]
             J = 2.0 * np.einsum("prX,qsX,qs->pr", cholJ, cholJ, dma, optimize=True)
-            chK = cholK if charge else cholJ
-            K = -1.0 * np.einsum("prX,qsX,rs->pq", chK, chK, dma, optimize=True)
-            h = hcore if charge else hcore + 0.5 * xi * np.eye(nbsf)
+            K = -1.0 * np.einsum("prX,qsX,rs->pq", cholK, cholK, dma, optimize=True)
+            h = hcore
             e1 = 2.0 * np.trace(h @ dma)
             eJ, eK = np.trace(J @ dma), np.trace(K @ dma)
             self.m_fock = [h + J + K]
@@ -98,20 +92,17 @@ def run_hf(pyqcpbc, SCF, minimizer, prog, hcore, cholJ, cholK, nbsf, nocc, charg
     solver.cfg("maxiter", 1000)
     solver.cfg("tol", 1e-9)
     solver.run(mf)
-    if charge:
-        mf.extra_diagon_fock()
+    mf.extra_diagon_fock()
     return np.array(np.squeeze(mf.get_eorb()[0]))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--bath", choices=["lda", "hf"], required=True)
-    ap.add_argument("--save", default=None, help="default models/model_14e19o_k0_<bath>.npz")
+    ap.add_argument("--save", default=os.path.join(HERE, "models", "model_14e19o_k0.npz"))
     ap.add_argument("--seed", type=int, default=0, help="random SCF guess")
     args = ap.parse_args()
-    save = args.save or os.path.join(HERE, "models", f"model_14e19o_k0_{args.bath}.npz")
+    save = args.save
 
-    import h5py
     import pyqcpbc
     from pyqcpbc.OPT import minimizer
     from pyqcpbc import SCF
@@ -136,25 +127,17 @@ def main():
     cholK = (2 * ueg_inc.chol_vecsK.toarray()).reshape(nbsf, nbsf, -1)
     hcore = ueg_inc.H1[0]
 
-    hfes_prew = run_hf(pyqcpbc, SCF, minimizer, prog, hcore, cholJ, cholK, nbsf, nocc, charge=True)
-    hfes_unsh = run_hf(pyqcpbc, SCF, minimizer, prog, hcore, cholJ, cholK, nbsf, nocc,
-                       charge=False, xi=xi)
-
-    group = f"lda_npw_{NPW}/ne_{N_ELEC}/rs_{int(RS)}/n1d_{NPTS_1D}"
-    with h5py.File(LDA_H5, "r") as f:
-        lda_sps = np.squeeze(f[f"{group}/mo_energies"][...])
-
-    moes = lda_sps if args.bath == "lda" else hfes_prew
-    modes = build_modes(aochol_exc, moes, nocc, ueg_exc, drpa_chol)
+    hfes_prew = run_hf(SCF, minimizer, prog, hcore, cholJ, cholK, nbsf, nocc)
+    modes = build_modes(aochol_exc, hfes_prew, nocc, ueg_exc, drpa_chol)   # dRPA@HF
     kpts = [tuple(int(x) for x in k) for k in ueg_inc.basis]
     eps_hf = {k: e for k, e in zip(kpts, hfes_prew)}
     Om = np.array([m["Omega"] for m in modes]) * 27.2114
     g = np.array([m["g"] for m in modes])
-    print(f"bath={args.bath}: {len(modes)} modes, Omega {Om.min():.3f}..{Om.max():.3f} eV, "
+    print(f"dRPA@HF: {len(modes)} modes, Omega {Om.min():.3f}..{Om.max():.3f} eV, "
           f"|g| {g.min():.3e}..{g.max():.3e} Ha; HF 2*sum(eps_occ) = {2*np.sum(hfes_prew[:nocc]):.10f} Ha")
     os.makedirs(os.path.dirname(save), exist_ok=True)
-    save_inputs(save, kpts, eps_hf, modes, ueg_inc.nelec, bath=args.bath, rs=RS,
-                lda_sps=lda_sps, hfes_prew=hfes_prew, hfes_unsh=hfes_unsh, madelung_xi=xi)
+    save_inputs(save, kpts, eps_hf, modes, ueg_inc.nelec, bath="drpa@hf", rs=RS,
+                hfes_prew=hfes_prew, madelung_xi=xi)
     print(f"wrote {save}")
 
 

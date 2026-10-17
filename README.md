@@ -1,4 +1,4 @@
-# TD-DMRG spectral functions of quasiboson Hamiltonians for the uniform electron gas
+# TD-DMRG spectral function of a quasiboson Hamiltonian for the uniform electron gas
 
 **Status: code ready, nothing has been run yet. Review requested before we submit jobs.**
 See [Design choices](#design-choices) for the decisions a reviewer may want to revisit.
@@ -10,8 +10,9 @@ function of a 14-electron / 19-plane-wave uniform electron gas cell (r_s = 4, Lo
 broadening η = 0.2 eV). It compares CCSD, CCSDT, DMRG on the full Coulomb Hamiltonian,
 HF+GW, LDA+GW and LDA+GW+C.
 
-This repo computes the **exact** k = 0 removal spectrum of two **quasiboson Hamiltonians**
-for the same cell with real-time TD-DMRG, and overlays it on Fig. 1a. The quasiboson
+This repo computes the **exact** k = 0 removal spectrum of a **quasiboson Hamiltonian**
+(HF band, dRPA@HF plasmons) for the same cell with real-time TD-DMRG, and overlays it on
+Fig. 1a. The quasiboson
 Hamiltonian is the one that GW (second order in g) and GW+cumulant (frozen hole) approximate.
 Solving it exactly separates "error of the Hamiltonian" from "error of the approximate solution".
 
@@ -34,12 +35,8 @@ All 19 k-points (38 spin-orbitals) and 14 electrons are kept, and every plasmon 
 included (no bath truncation).
 
 The plasmons (ν labels the dRPA eigenmodes in each momentum-transfer sector q) and their
-couplings come from a per-q direct-RPA (Casida) calculation. There are two choices:
-
-| bath | Ω_{νq}, g_ν(q) computed from | file |
-|---|---|---|
-| `lda` | dRPA@LDA: LDA orbital energies | `models/model_14e19o_k0_lda.npz` |
-| `hf`  | dRPA@HF: `hfes_prew` | `models/model_14e19o_k0_hf.npz` |
+couplings come from a per-q direct-RPA (Casida) calculation on the same HF eigenvalues
+(`hfes_prew`), i.e. **dRPA@HF**. The model is stored in `models/model_14e19o_k0.npz`.
 
 g_ν(q) = |V^ν_{k,k−q}(q)| is independent of k for plane-wave orbitals.
 
@@ -54,8 +51,7 @@ where ε^HF here excludes the Madelung term. The extra +|v_M| on the diagonal co
 q ≠ 0 restriction in the exchange term. The direct approximation drops the exchange terms
 but keeps this diagonal shift, so dRPA@HF is the Casida problem built on
 ε̃_k = k²/2 + Σ^x_k − |v_M| n_k, which is exactly `hfes_prew`. The bath therefore includes
-the Madelung shift by construction. Its strongest plasmon sits near 10.6 eV, compared with
-about 5 eV for dRPA@LDA.
+the Madelung shift by construction; its strongest plasmon sits near 10.6 eV.
 
 ### Mapping to Renormalizer (`qb_dmrg.py`)
 
@@ -159,21 +155,20 @@ It then times a ground-state sweep and a TDVP step on the real model and writes
 ```bash
 # 0. environment: renormalizer 0.0.11, numpy, scipy, matplotlib (GPU: + cupy-cuda12x)
 # 1. model inputs (needs the group's private pyqcpbc/ueg stack; skip if models/*.npz exist)
-python generate_model.py --bath lda
-python generate_model.py --bath hf
-# 2. everything else, as a SLURM chain per bath (setup -> check -> gs -> td array -> analyze)
+python generate_model.py                 # -> models/model_14e19o_k0.npz
+# 2. everything else, as a SLURM chain (setup -> check -> gs -> td array -> analyze)
 bash submit.sh --dry                     # print the sbatch commands
-bash submit.sh                           # both baths on the joonholee partition
-bash submit.sh --baths "lda" --gpu
+bash submit.sh                           # on the joonholee partition
+bash submit.sh --gpu                     # gs/td on one A100
 # 3. the figure
 python plot_fig1a.py                     # -> fig1a_qb_dmrg.png
 ```
 
-Single stages run directly, e.g. `python run_tddmrg.py --stage check --bath lda`.
+Single stages run directly, e.g. `python run_tddmrg.py --stage check`.
 
-- `td` tasks checkpoint every 50 steps (`work/<bath>/td/<tag>_{C,mps}.npz`) and resume
+- `td` tasks checkpoint every 50 steps (`work/td/<tag>_{C,mps}.npz`) and resume
   automatically; pass `--fresh` to restart a task.
-- `submit.sh` skips any stage whose `work/<bath>/<stage>.done` exists.
+- `submit.sh` skips any stage whose `work/<stage>.done` exists.
 
 ## Files
 
@@ -181,9 +176,9 @@ Single stages run directly, e.g. `python run_tddmrg.py --stage check --bath lda`
 |---|---|
 | `qb_dmrg.py` | model construction, DMRG ground state, TD correlation function, transform, dense exact diagonalization |
 | `run_tddmrg.py` | stages `check`, `gs`, `td`, `analyze` and the convergence ladders |
-| `generate_model.py` | builds the model npz (HF SCF, LDA eigenvalues, per-q dRPA) |
+| `generate_model.py` | builds the model npz (HF SCF, per-q dRPA@HF) |
 | `submit.sh` | SLURM chain |
-| `plot_fig1a.py` | McClain Fig. 1a with our two spectra overlaid |
+| `plot_fig1a.py` | McClain Fig. 1a with our spectrum overlaid |
 | `models/` | model inputs (see `models/README.md`) |
 | `reference/claude_fig1a_*.csv` | McClain Fig. 1a curves, vector-extracted from the published PDF (absolute ω in eV, A in 1/eV; the header of each file gives the provenance) |
 

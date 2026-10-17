@@ -1,7 +1,7 @@
 # Model inputs
 
-`generate_model.py --bath {lda,hf}` writes `model_14e19o_k0_<bath>.npz`. That script needs
-the group's private electronic-structure stack. Once the files exist they are committed
+`generate_model.py` writes `model_14e19o_k0.npz` (HF band, dRPA@HF plasmons). That script
+needs the group's private electronic-structure stack. Once the file exists it is committed
 here, so the DMRG side runs with only Renormalizer, NumPy and SciPy.
 
 Cell: 14 electrons, 19 plane waves, r_s = 4.
@@ -18,8 +18,8 @@ All energies are in hartree.
 | `mode_Omega` | (n_modes,) | Ω_{νq} |
 | `mode_g` | (n_modes,) | g_ν(q) = \|V^ν_{k,k−q}(q)\|, independent of k |
 | `nelec` | (2,) | (7, 7) |
-| `bath` | str | `lda` or `hf` (which eigenvalues entered dRPA) |
-| `lda_sps`, `hfes_prew`, `hfes_unsh` | (19,) | LDA, probe-charge HF and shifted-Ewald HF eigenvalues (for reference) |
+| `bath` | str | `drpa@hf` (the eigenvalues that entered dRPA) |
+| `hfes_prew` | (19,) | probe-charge HF eigenvalues in SCF order (for reference) |
 | `madelung_xi` | scalar | Madelung constant ξ of the cell |
 
 Read the file with `qb_dmrg.load_inputs`.
