@@ -135,9 +135,23 @@ These are chosen once and not scanned; we revisit them only if the results look 
 
 ## Convergence ladders (`run_tddmrg.py`)
 
-**Ground state (`gs`).** Bond dimension M ∈ {32 … 1024} is scanned inside boson levels
-nbas ∈ {1 … 6}. The scan stops when |ΔE₀| < 10⁻⁶ Ha, the summed top-level boson occupation
-is < 10⁻⁶, and DMRG's own sweep test passes.
+**Ground state (`gs`).** One SLURM array task per nbas ∈ {2, 3, 4, 5, 6}, i.e. one for
+every nbas the `td` tasks use, all running in parallel.
+
+- **Starting state.** Each task starts from the HF determinant ⊗ plasmon vacuum seeded with
+  10⁻³ H|HF⟩ (`seeded_hf_mps`). Both obvious starts fail:
+  - Plain HF is a fixed point of two-site DMRG here: every coupling a†_{k+q} a_k b touches three
+    sites, and the noise cannot open new particle-number sectors on the bonds, so DMRG stays at
+    E_HF exactly.
+  - A random start stalled *above* E_HF (nbas = 2, up to M = 1024) in the first attempt.
+- **Bond dimensions.** M = 128 → 256, plus 512 at the reference nbas = 4. Each rung warm-starts
+  from the previous one and stops sweeping once the energy changes by less than 10⁻⁵ Ha.
+- **Which ground state td uses.** Every `td` task uses the M = 256 ground state for its nbas.
+  The M = 512 rung at nbas = 4 measures how far that is from convergence (a warning is logged
+  if the last rung moves E₀ by more than 10⁻⁴ Ha).
+- **Guard.** A task fails if any rung ends above E_HF, which is a variational impossibility.
+- **Output:** `gs_scan_nb*.dat`, `gs_nb*.json` and `gs_nb*_M*.npz`. A killed task resumes from
+  its last finished rung.
 
 **Time evolution (`td`).** One SLURM array task per point; one parameter is varied at a time
 around the reference.

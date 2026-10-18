@@ -12,12 +12,14 @@ Stages (each reads the model npz, never re-runs SCF):
   check    tiny sub-model vs dense ED: DMRG E0, TD C(t) vs Lehmann C(t) (one- and two-way),
            A(w) vs Lorentzian sum; then a timing probe on the full model
                                                           -> check_report.json, timing.json
-  gs       ground state: bond dimension M nested inside boson levels nbas
-                                                          -> gs_scan.dat, gs_converged.json, gs_nb*_M*.npz
+  gs       ground state, one array task per nbas (see GS_NB): HF start, M = 128 -> 256
+           (-> 512 at the reference nbas), HF + H|HF> start, fails if E0 > E_HF
+                                              -> gs_scan_nb*.dat, gs_nb*.json, gs_nb*_M*.npz
   td       one array task per point of the M and nbas ladders (see td_tasks)
                                                           -> td/<tag>_final.npz, td/<tag>.json
   analyze  A(w), peaks, convergence tables and figures    -> A_k0_td.dat, convergence.md, *.png
   ntasks   print the number of td array tasks
+  ngs      print the number of gs array tasks
 """
 import argparse
 import glob
@@ -36,12 +38,11 @@ HA2EV = 27.2114
 ETA = 0.2 / HA2EV                         # Lorentzian HWHM (Ha), McClain Fig. 1a
 K0 = (0, 0, 0)
 
-# ---- ground-state ladders
-NB_LIST = [1, 2, 3, 4, 5, 6]              # SHO levels per mode (n_max = nbas - 1)
-M_LIST = [32, 64, 128, 256, 512, 1024]
-TOL_M = 1e-6                              # Ha, E0 change between successive M
-TOL_NB = 1e-6                             # Ha, E0 change between successive nbas
-TOP_OCC_TOL = 1e-6                        # summed occupation of the highest SHO level
+# ---- ground state: one array task per nbas, HF start, short bond-dimension ladder
+GS_NB = [2, 3, 4, 5, 6]                   # SHO levels per mode (n_max = nbas - 1); = NB_TD
+GS_M_TD = 256                             # bond dimension of the GS fed to every td task
+GS_SWEEP_TOL = 1e-5                       # Ha, sweep-to-sweep stop inside one rung
+GS_TOL = 1e-4                             # Ha, warn if the last rung still moves E0 more
 
 # ---- time evolution: fixed grid, reference point and ladders (one parameter at a time)
 DT = 0.5                                  # a.u.; TDVP step
@@ -52,6 +53,11 @@ M_REF = 256                               # TD bond dimension
 NB_REF = 4                                # n_max = 3
 M_TD = [64, 128, 256, 512]
 NB_TD = [2, 3, 4, 5, 6]
+
+
+def gs_ladder(nb):
+    """GS bond dimensions: 128 -> 256 for every nbas, plus 512 at the reference nbas."""
+    return [128, 256, 512] if nb == NB_REF else [128, 256]
 
 OMEGAS_EV = np.arange(-20.0, 0.0 + 1e-9, 0.01)
 
@@ -159,64 +165,66 @@ def stage_check(args):
 
 
 # ---------------------------------------------------------------------------
+def gs_noise_ramp(M, n_sweeps=12):
+    """From a product state: noisy sweeps growing the bond dimension, then noiseless at M."""
+    return ([[max(M // 4, 1), 0.4], [max(M // 2, 1), 0.2], [max(3 * M // 4, 1), 0.1]]
+            + [[M, 0]] * n_sweeps)
+
+
 def stage_gs(args):
+    """One array task per nbas in GS_NB. Start from HF (x) plasmon vacuum seeded with H|HF>, climb the bond
+    dimensions in gs_ladder(nb), warm-starting each rung from the previous one. Every rung must
+    end at or below E_HF (the start is exactly E_HF), otherwise the task fails."""
     Q = import_q()
-    from renormalizer import Mpo
+    from renormalizer import Mpo, Mps
+    nb = GS_NB[args.task]
     kpts, eps, modes, nelec = Q.load_inputs(args.model)
     ne = sum(nelec)
     hf_energy = 2 * sum(sorted(eps.values())[: nelec[0]])
     os.makedirs(args.workdir, exist_ok=True)
-    scan = open(os.path.join(args.workdir, "gs_scan.dat"), "a")
-    scan.write("# nb  M  E0(Ha)  dE_M  N  n_k0up  top_level_occ  sweeps  dmrg_conv  wall_s\n")
-    per_nb = {}
-    E_prev_nb, m_start, nb_conv = None, 0, None
-    for nb in NB_LIST:
-        model, info = Q.build_model(kpts, eps, modes, nbas_boson=nb)
-        h = Mpo(model)
-        E_prev, mps, M_conv = None, None, None
-        ms = M_LIST[m_start:]
-        for M in ms:
-            t0 = time.time()
-            en, mps, dconv = Q.dmrg_ground_state(model, ne, M=M, mpo=h, mps0=mps,
-                                                 e_rtol=0, e_atol=TOL_M / 10)
-            E = Q.gs_energy(model, mps, h)
-            obs = Q.gs_observables(model, info, mps, nb)
-            dE = np.nan if E_prev is None else E - E_prev
-            scan.write(f"{nb} {M} {E:.12f} {dE:+.3e} {obs['N']:.8f} {obs['n_k0']:.8f} "
-                       f"{obs['top_level_occ']:.3e} {len(en)} {int(dconv)} {time.time()-t0:.0f}\n")
-            scan.flush()
-            log(f"nb={nb} M={M} E0={E:.10f} dE={dE:+.2e} {obs} dmrg_conv={dconv}")
-            if nb == 1:
-                assert abs(E - hf_energy) < 1e-8, (E, hf_energy)
-            fname = os.path.join(args.workdir, f"gs_nb{nb}_M{M}.npz")
-            mps.dump(fname)
-            if E_prev is not None and abs(dE) < TOL_M and dconv:
-                M_conv = M
-                break
-            E_prev = E
-        if M_conv is None:
-            log(f"WARNING: M not converged at nb={nb} up to M={ms[-1]}")
-            M_conv = ms[-1]
-        per_nb[nb] = dict(M=M_conv, E0=E, file=fname, obs=obs,
-                          M_converged=bool(abs(dE) < TOL_M))
-        m_start = max(M_LIST.index(M_conv) - 1, 0)   # next nb needs at least this M
-        dE_nb = np.nan if E_prev_nb is None else E - E_prev_nb
-        log(f"nb={nb}: M*={M_conv} E0={E:.10f} dE_nb={dE_nb:+.2e} top_occ={obs['top_level_occ']:.2e}")
-        if (E_prev_nb is not None and abs(dE_nb) < TOL_NB
-                and obs["top_level_occ"] < TOP_OCC_TOL and per_nb[nb]["M_converged"]):
-            nb_conv = nb
-            break
-        E_prev_nb = E
-    nb_converged = nb_conv is not None
-    if not nb_converged:
-        log(f"WARNING: nbas_boson not converged up to {NB_LIST[-1]}")
-        nb_conv = max(per_nb)
-    out = dict(nb=nb_conv, M=per_nb[nb_conv]["M"], E0=per_nb[nb_conv]["E0"],
-               file=per_nb[nb_conv]["file"], nb_converged=nb_converged,
-               per_nb={str(k): v for k, v in per_nb.items()}, hf_energy=hf_energy,
-               tol_M=TOL_M, tol_nb=TOL_NB)
-    Q.dumps_json(out, os.path.join(args.workdir, "gs_converged.json"))
-    done(args.workdir, "gs")
+    model, info = Q.build_model(kpts, eps, modes, nbas_boson=nb)
+    h = Mpo(model)
+    out_path = os.path.join(args.workdir, f"gs_nb{nb}.json")
+    res = load_json(out_path) if os.path.exists(out_path) else dict(
+        nb=nb, hf_energy=hf_energy, M_td=GS_M_TD, ladder=[])
+    done_M = {r["M"] for r in res["ladder"]}
+    mps = Mps.load(model, res["ladder"][-1]["file"]) if res["ladder"] else None
+    if mps is None:
+        E_start = Q.gs_energy(model, Q.hf_mps(model, info, kpts, eps, nelec[0]), h)
+        assert abs(E_start - hf_energy) < 1e-8, (E_start, hf_energy)
+        mps = Q.seeded_hf_mps(model, info, kpts, eps, nelec[0], h)
+        log(f"nb={nb}: start = HF + 1e-3 H|HF>, E-E_HF = {Q.gs_energy(model, mps, h) - hf_energy:+.3e}")
+    E_prev = res["ladder"][-1]["E0"] if res["ladder"] else None
+    scan = open(os.path.join(args.workdir, f"gs_scan_nb{nb}.dat"), "a")
+    scan.write("# nb  M  E0(Ha)  E0-E_HF  dE_M  N  n_k0up  top_level_occ  sweeps  dmrg_conv  wall_s\n")
+    for M in gs_ladder(nb):
+        if M in done_M:
+            continue
+        t0 = time.time()
+        proc = gs_noise_ramp(M) if not res["ladder"] else None   # warm start: light noise
+        en, mps, dconv = Q.dmrg_ground_state(model, ne, M=M, mpo=h, mps0=mps, procedure=proc,
+                                             e_rtol=0, e_atol=GS_SWEEP_TOL)
+        E = Q.gs_energy(model, mps, h)
+        obs = Q.gs_observables(model, info, mps, nb)
+        dE = np.nan if E_prev is None else E - E_prev
+        scan.write(f"{nb} {M} {E:.12f} {E - hf_energy:+.6e} {dE:+.3e} {obs['N']:.8f} "
+                   f"{obs['n_k0']:.8f} {obs['top_level_occ']:.3e} {len(en)} {int(dconv)} "
+                   f"{time.time()-t0:.0f}\n")
+        scan.flush()
+        log(f"nb={nb} M={M} E0={E:.10f} E0-E_HF={E - hf_energy:+.3e} dE={dE:+.2e} {obs} "
+            f"dmrg_conv={dconv}")
+        if E > hf_energy + 1e-8:
+            raise RuntimeError(f"nb={nb} M={M}: DMRG energy {E} above E_HF {hf_energy}")
+        fname = os.path.join(args.workdir, f"gs_nb{nb}_M{M}.npz")
+        mps.dump(fname)
+        res["ladder"].append(dict(M=M, E0=E, dE=None if E_prev is None else dE,
+                                  dmrg_converged=bool(dconv), obs=obs, file=fname))
+        Q.dumps_json(res, out_path)
+        E_prev = E
+    if len(res["ladder"]) > 1 and abs(res["ladder"][-1]["dE"]) > GS_TOL:
+        log(f"WARNING: nb={nb}: last rung changed E0 by {res['ladder'][-1]['dE']:+.2e} Ha "
+            f"> {GS_TOL:g}")
+    done(args.workdir, f"gs_nb{nb}")
 
 
 # ---------------------------------------------------------------------------
@@ -230,18 +238,11 @@ def td_tasks():
 
 
 def td_ground_state(Q, args, model, h, nb, ne):
-    """Reuse the gs-stage MPS when that nb was scanned; otherwise run DMRG at the
-    converged gs bond dimension."""
+    """The gs-stage MPS for this nbas at bond dimension GS_M_TD."""
     from renormalizer import Mps
-    gs = load_json(os.path.join(args.workdir, "gs_converged.json"))
-    g = gs["per_nb"].get(str(nb))
-    if g is not None:
-        return Mps.load(model, g["file"]), g["M"]
-    M = gs["M"]
-    en, mps, conv = Q.dmrg_ground_state(model, ne, M=M, mpo=h, e_rtol=0, e_atol=TOL_M / 10)
-    if not conv:
-        log(f"WARNING: GS for nb={nb} not converged at M={M}")
-    return mps, M
+    gs = load_json(os.path.join(args.workdir, f"gs_nb{nb}.json"))
+    g = next(r for r in gs["ladder"] if r["M"] == GS_M_TD)
+    return Mps.load(model, g["file"]), g["M"]
 
 
 def stage_td(args):
@@ -349,13 +350,13 @@ def stage_analyze(args):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--stage", required=True, choices=["check", "gs", "td", "analyze", "ntasks"])
+    ap.add_argument("--stage", required=True, choices=["check", "gs", "td", "analyze", "ntasks", "ngs"])
     ap.add_argument("--scheme", choices=["shifted", "standard", "selfenergy"], default="shifted",
                     help="Madelung scheme; picks the default --model and --workdir")
     ap.add_argument("--model", default=None,
                     help="default models/model_14e19o_k0.npz (shifted) or ..._<scheme>.npz")
     ap.add_argument("--workdir", default=None, help="default work/ (shifted) or work_<scheme>/")
-    ap.add_argument("--task", type=int, default=0, help="td array index (see --stage ntasks)")
+    ap.add_argument("--task", type=int, default=0, help="gs/td array index (see --stage ngs/ntasks)")
     ap.add_argument("--fresh", action="store_true", help="td: ignore an existing checkpoint")
     a = ap.parse_args()
     if a.scheme == "shifted":
@@ -366,5 +367,7 @@ if __name__ == "__main__":
         a.workdir = a.workdir or os.path.join(HERE, f"work_{a.scheme}")
     if a.stage == "ntasks":
         print(len(td_tasks()))
+    elif a.stage == "ngs":
+        print(len(GS_NB))
     else:
         dict(check=stage_check, gs=stage_gs, td=stage_td, analyze=stage_analyze)[a.stage](a)

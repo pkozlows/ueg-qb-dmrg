@@ -38,6 +38,7 @@ case $SCHEME in
     *) echo "unknown scheme $SCHEME"; exit 1;;
 esac
 NT=$($PY $WD/run_tddmrg.py --stage ntasks)
+NGS=$($PY $WD/run_tddmrg.py --stage ngs)
 mkdir -p "$WD/logs"
 
 cpu=(-p joonholee -n 1 --cpus-per-task=32
@@ -72,10 +73,17 @@ mkdir -p "$W"
 R="$PY $WD/run_tddmrg.py$SARG"
 for i in "${!order[@]}"; do
     stage=${order[$i]}
-    if (( i < start )) || [[ -f $W/$stage.done ]]; then echo "skip $stage"; continue; fi
+    stage_done=0
+    if [[ $stage == gs ]]; then   # array: done when every per-nbas task wrote gs_nb*.done
+        (( $(ls $W/gs_nb*.done 2>/dev/null | wc -l) >= NGS )) && stage_done=1
+    else
+        [[ -f $W/$stage.done ]] && stage_done=1
+    fi
+    if (( i < start || stage_done )); then echo "skip $stage"; continue; fi
     case $stage in
         check)   id=$(sb check dep "${cpu[@]}" --mem=100G -t 12:00:00 -- "$R --stage check");;
-        gs)      id=$(sb gs dep "${heavy[@]}" --mem=180G -t $heavy_t -- "$pre$R --stage gs");;
+        gs)      id=$(sb gs dep "${heavy[@]}" --mem=120G -t $heavy_t --array=0-$((NGS-1)) -- \
+                      "$pre$R --stage gs --task \$SLURM_ARRAY_TASK_ID");;
         td)      id=$(sb td dep "${heavy[@]}" --mem=96G -t $heavy_t --array=0-$((NT-1)) -- \
                       "$pre$R --stage td --task \$SLURM_ARRAY_TASK_ID")
                  dep=(--dependency=afterany:${id%%_*});;   # analyze runs on whatever finished

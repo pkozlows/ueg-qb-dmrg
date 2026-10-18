@@ -179,6 +179,24 @@ def dmrg_ground_state(model, nelec, M=160, procedure=None, nroots=1, m_init=20,
     return energies, mps, converged
 
 
+def hf_mps(model, info, kpts, eps_hf, nocc):
+    """HF determinant (x) plasmon vacuum as a bond-dimension-1 MPS: both spins of the nocc
+    lowest-eps_hf k-points occupied. Its energy in H_qb is exactly 2*sum(eps_occ)."""
+    occ = sorted(kpts, key=lambda k: eps_hf[k])[:nocc]
+    cond = {info["orb_index"][(k, s)]: 1 for k in occ for s in (0, 1)}
+    return Mps.hartree_product_state(model, cond)
+
+
+def seeded_hf_mps(model, info, kpts, eps_hf, nocc, mpo, m_seed=16, coef=1e-3):
+    """DMRG starting point: HF (x) vacuum plus a small admixture of H|HF> (bond dim m_seed).
+    Plain HF is a fixed point of 2-site DMRG here: every coupling a+_{k+q} a_k b touches three
+    sites and the noise cannot open new particle-number sectors on the bonds, so DMRG stays at
+    E_HF exactly. A random start stalls above E_HF instead (seen at nbas=2 up to M=1024)."""
+    mps = hf_mps(model, info, kpts, eps_hf, nocc)
+    mps.compress_config = CompressConfig(CompressCriteria.fixed, max_bonddim=m_seed)
+    return mps.expand_bond_dimension(mpo, coef=coef, include_ex=False)
+
+
 def gs_energy(model, mps, mpo=None):
     """<gs|H|gs> of the returned MPS (rather than the lowest sweep energy)."""
     mpo = mpo if mpo is not None else Mpo(model)
